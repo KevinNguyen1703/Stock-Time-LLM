@@ -219,6 +219,9 @@ def train_model(args):
         args.embed,
         args.des, 0)
     
+    # Load content for prompts BEFORE model initialization
+    args.content = load_content(args)
+    
     # Load data with prompt support
     accelerator.print(f"\nLoading data with dynamic prompts: {args.use_dynamic_prompt}")
     train_data, train_loader = data_provider(args, 'train', with_prompt=args.use_dynamic_prompt)
@@ -235,9 +238,6 @@ def train_model(args):
     
     # Create checkpoint path
     path = os.path.join(args.checkpoints, setting + '-' + args.model_comment)
-    
-    # Load content for prompts
-    args.content = load_content(args)
     
     if not os.path.exists(path) and accelerator.is_local_main_process:
         os.makedirs(path)
