@@ -228,7 +228,12 @@ def load_content(args):
     if 'ETT' in args.data:
         file = 'ETT'
     elif 'Stock' in args.data:
-        file = 'Stock'
+        # Check if using V2 data (with momentum features)
+        data_path = getattr(args, 'data_path', '')
+        if '_v2' in data_path.lower() or getattr(args, 'use_v2_data', False):
+            file = 'Stock_v2'
+        else:
+            file = 'Stock'
     else:
         file = args.data
     
@@ -244,12 +249,22 @@ def load_content(args):
     except FileNotFoundError:
         # Default content for stock data
         if 'Stock' in args.data:
-            content = (
-                "VCB (Vietcombank) Stock Price Prediction Dataset. "
-                "This dataset contains daily stock price data with technical indicators including "
-                "RSI, MACD, Bollinger Band Position, Volume, and Rate of Change. "
-                "The task is to predict future adjusted closing prices based on historical indicator patterns."
-            )
+            if '_v2' in str(getattr(args, 'data_path', '')).lower():
+                content = (
+                    "VCB (Vietcombank) Stock Price Prediction with Advanced Technical Analysis. "
+                    "Features: RSI, MACD, Bollinger Bands, Volume, ROC, plus momentum indicators "
+                    "(1d/3d/5d/10d returns), MA Crossover, Trend Strength, Price Position, Volatility. "
+                    "BULLISH signals: RSI<40, positive MACD, positive momentum, positive MA crossover. "
+                    "BEARISH signals: RSI>60, negative MACD, negative momentum, negative MA crossover. "
+                    "Predict DIRECTION (up/down) is critical for profitable trading."
+                )
+            else:
+                content = (
+                    "VCB (Vietcombank) Stock Price Prediction Dataset. "
+                    "This dataset contains daily stock price data with technical indicators including "
+                    "RSI, MACD, Bollinger Band Position, Volume, and Rate of Change. "
+                    "The task is to predict future adjusted closing prices based on historical indicator patterns."
+                )
         else:
             content = "Time series forecasting dataset."
     

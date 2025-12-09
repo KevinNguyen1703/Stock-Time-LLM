@@ -1,6 +1,7 @@
 """
 Custom Stock Data Loader for Time-LLM with Dynamic Prompts
 Supports dynamic per-sample prompts (professor advice) for stock price prediction
+V2 supports additional momentum features
 """
 
 import os
@@ -15,10 +16,21 @@ import json
 warnings.filterwarnings('ignore')
 
 
+# Feature configurations for different data versions
+FEATURES_V1 = ['RSI', 'MACD', 'BB_Position', 'Volume_Norm', 'ROC', 'Adj Close']
+FEATURES_V2 = [
+    'RSI', 'MACD', 'BB_Position', 'Volume_Norm', 'ROC',
+    'momentum_1d', 'momentum_3d', 'momentum_5d', 'momentum_10d',
+    'MA_Crossover', 'Trend_Strength', 'Price_Position', 'Volatility',
+    'Adj Close'
+]
+
+
 class Dataset_Stock(Dataset):
     """
     Stock dataset with technical indicators for Time-LLM
     Supports both short-term (1-day) and mid-term (60-day) predictions
+    Supports V1 (6 features) and V2 (14 features with momentum)
     """
     
     def __init__(self, root_path, flag='train', size=None,
@@ -62,6 +74,9 @@ class Dataset_Stock(Dataset):
         self.root_path = root_path
         self.data_path = data_path
         self.prompt_data_path = prompt_data_path
+        
+        # Detect data version based on filename
+        self.is_v2 = '_v2' in data_path.lower()
         
         self.__read_data__()
         
@@ -183,17 +198,36 @@ class Dataset_Stock(Dataset):
         return self._generate_statistical_prompt(s_begin)
     
     def _generate_statistical_prompt(self, s_begin):
-        """Generate a statistical prompt based on window data"""
+        """Generate a statistical prompt based on window data (supports V1 and V2)"""
         s_end = s_begin + self.seq_len
         window_raw = self.raw_data[s_begin:s_end]
         
-        # Feature indices: RSI=0, MACD=1, BB_Position=2, Volume_Norm=3, ROC=4, Adj Close=5
-        rsi = window_raw[:, 0]
-        macd = window_raw[:, 1]
-        bb_pos = window_raw[:, 2]
-        volume = window_raw[:, 3]
-        roc = window_raw[:, 4]
-        price = window_raw[:, 5]
+        if self.is_v2:
+            # V2 indices: RSI=0, MACD=1, BB_Position=2, Volume_Norm=3, ROC=4,
+            # momentum_1d=5, momentum_3d=6, momentum_5d=7, momentum_10d=8,
+            # MA_Crossover=9, Trend_Strength=10, Price_Position=11, Volatility=12, Adj Close=13
+            rsi = window_raw[:, 0]
+            macd = window_raw[:, 1]
+            bb_pos = window_raw[:, 2]
+            volume = window_raw[:, 3]
+            roc = window_raw[:, 4]
+            mom_1d = window_raw[:, 5]
+            mom_5d = window_raw[:, 7]
+            ma_cross = window_raw[:, 9]
+            volatility = window_raw[:, 12]
+            price = window_raw[:, -1]  # Last column is Adj Close
+        else:
+            # V1 indices: RSI=0, MACD=1, BB_Position=2, Volume_Norm=3, ROC=4, Adj Close=5
+            rsi = window_raw[:, 0]
+            macd = window_raw[:, 1]
+            bb_pos = window_raw[:, 2]
+            volume = window_raw[:, 3]
+            roc = window_raw[:, 4]
+            price = window_raw[:, 5]
+            mom_1d = None
+            mom_5d = None
+            ma_cross = None
+            volatility = None
         
         # Generate analysis
         rsi_current = rsi[-1]
@@ -213,6 +247,7 @@ class Dataset_Stock(Dataset):
         volume_signal = "high trading activity" if volume_current > 1 else (
             "low trading activity" if volume_current < -1 else "normal trading activity")
         
+        # Build prompt
         prompt = (
             f"VCB Stock Analysis for the past 60 trading days: "
             f"The stock shows a {trend} trend with {abs(price_change):.2f}% price change. "
@@ -222,8 +257,57 @@ class Dataset_Stock(Dataset):
             f"Volume analysis indicates {volume_signal}. "
             f"Rate of Change (ROC) is {roc[-1]:.2f}%, suggesting "
             f"{'positive' if roc[-1] > 0 else 'negative'} momentum. "
-            f"Current closing price: {price[-1]:.2f} VND."
         )
+        
+        # Add V2 specific info
+        if self.is_v2 and mom_1d is not None:
+            # Count bullish/bearish signals
+            bullish = 0
+            bearish = 0
+            
+            if mom_1d[-1] > 0.5:
+                bullish += 1
+            elif mom_1d[-1] < -0.5:
+                bearish += 1
+                
+            if mom_5d[-1] > 1:
+                bullish += 1
+            elif mom_5d[-1] < -1:
+                bearish += 1
+                
+            if ma_cross[-1] > 1:
+                bullish += 1
+            elif ma_cross[-1] < -1:
+                bearish += 1
+            
+            if macd_current > 0:
+                bullish += 1
+            else:
+                bearish += 1
+                
+            if rsi_current < 40:
+                bullish += 1
+            elif rsi_current > 60:
+                bearish += 1
+            
+            signal_diff = bullish - bearish
+            if signal_diff >= 2:
+                signal = "BULLISH"
+            elif signal_diff <= -2:
+                signal = "BEARISH"
+            else:
+                signal = "NEUTRAL"
+            
+            vol_warning = "High volatility expected. " if volatility[-1] > 30 else ""
+            
+            prompt += (
+                f"Short-term momentum (1d): {mom_1d[-1]:+.2f}%, (5d): {mom_5d[-1]:+.2f}%. "
+                f"MA Crossover signal: {ma_cross[-1]:+.2f}%. "
+                f"{vol_warning}"
+                f"OVERALL SIGNAL: {signal}. "
+            )
+        
+        prompt += f"Current closing price: {price[-1]:.2f} VND."
         
         return prompt
     
@@ -249,7 +333,7 @@ class Dataset_Stock_WithPrompt(Dataset_Stock):
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.feature_names = ['RSI', 'MACD', 'BB_Position', 'Volume_Norm', 'ROC', 'Adj Close']
+        self.feature_names = FEATURES_V2 if self.is_v2 else FEATURES_V1
     
     def __getitem__(self, index):
         """
@@ -282,13 +366,15 @@ def stock_collate_fn(batch):
     """
     Custom collate function for Dataset_Stock_WithPrompt
     Handles the string prompts properly
+    Uses float32 for MPS compatibility
     """
     import torch
     
-    seq_x = torch.stack([torch.tensor(item[0]) for item in batch])
-    seq_y = torch.stack([torch.tensor(item[1]) for item in batch])
-    seq_x_mark = torch.stack([torch.tensor(item[2]) for item in batch])
-    seq_y_mark = torch.stack([torch.tensor(item[3]) for item in batch])
+    # Use float32 for MPS compatibility (Apple Silicon doesn't support float64)
+    seq_x = torch.stack([torch.tensor(item[0], dtype=torch.float32) for item in batch])
+    seq_y = torch.stack([torch.tensor(item[1], dtype=torch.float32) for item in batch])
+    seq_x_mark = torch.stack([torch.tensor(item[2], dtype=torch.float32) for item in batch])
+    seq_y_mark = torch.stack([torch.tensor(item[3], dtype=torch.float32) for item in batch])
     prompts = [item[4] for item in batch]  # Keep as list of strings
     
     return seq_x, seq_y, seq_x_mark, seq_y_mark, prompts
@@ -297,16 +383,35 @@ def stock_collate_fn(batch):
 def get_stock_content(data_path, seq_len=60, pred_len=1):
     """
     Generate dataset description for Time-LLM prompt
+    Supports V1 and V2 data
     """
-    content = (
-        f"This dataset contains VCB (Vietcombank) stock price data with technical indicators. "
-        f"Features include: RSI (Relative Strength Index), MACD (Moving Average Convergence Divergence), "
-        f"BB_Position (Bollinger Band Position), Volume (normalized trading volume), "
-        f"ROC (Rate of Change), and Adj Close (Adjusted Closing Price). "
-        f"The task is to predict the stock's adjusted closing price for the next "
-        f"{'day' if pred_len == 1 else f'{pred_len} days'} based on the past {seq_len} days of data. "
-        f"RSI above 70 typically indicates overbought conditions, while below 30 indicates oversold. "
-        f"Positive MACD suggests bullish momentum, negative suggests bearish. "
-        f"BB_Position near 1 suggests price is near upper band, near 0 suggests lower band."
-    )
+    is_v2 = '_v2' in data_path.lower()
+    
+    if is_v2:
+        content = (
+            f"This dataset contains VCB (Vietcombank) stock price data with advanced technical indicators and momentum features. "
+            f"Core indicators: RSI (Relative Strength Index), MACD (histogram), BB_Position (Bollinger Band position 0-1), "
+            f"Volume_Norm (normalized volume z-score), ROC (Rate of Change %). "
+            f"Momentum features: momentum_1d/3d/5d/10d (% returns over different periods), "
+            f"MA_Crossover (short vs long MA signal), Trend_Strength, Price_Position (0-1 range position), "
+            f"Volatility (annualized %). Target: Adj Close (Adjusted Closing Price). "
+            f"The task is to predict the stock's adjusted closing price for the next "
+            f"{'day' if pred_len == 1 else f'{pred_len} days'} based on the past {seq_len} days of data. "
+            f"TRADING SIGNALS: RSI<30=oversold(BUY), RSI>70=overbought(SELL). "
+            f"MACD>0=bullish momentum, MACD<0=bearish momentum. "
+            f"Positive momentum_1d with positive momentum_5d confirms trend continuation. "
+            f"MA_Crossover>0 is bullish, MA_Crossover<0 is bearish."
+        )
+    else:
+        content = (
+            f"This dataset contains VCB (Vietcombank) stock price data with technical indicators. "
+            f"Features include: RSI (Relative Strength Index), MACD (Moving Average Convergence Divergence), "
+            f"BB_Position (Bollinger Band Position), Volume (normalized trading volume), "
+            f"ROC (Rate of Change), and Adj Close (Adjusted Closing Price). "
+            f"The task is to predict the stock's adjusted closing price for the next "
+            f"{'day' if pred_len == 1 else f'{pred_len} days'} based on the past {seq_len} days of data. "
+            f"RSI above 70 typically indicates overbought conditions, while below 30 indicates oversold. "
+            f"Positive MACD suggests bullish momentum, negative suggests bearish. "
+            f"BB_Position near 1 suggests price is near upper band, near 0 suggests lower band."
+        )
     return content

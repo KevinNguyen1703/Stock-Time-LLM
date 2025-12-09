@@ -67,11 +67,18 @@ def data_provider(args, flag, with_prompt=False):
         # Stock data with optional prompt support
         prompt_data_path = getattr(args, 'prompt_data_path', None)
         if prompt_data_path is None:
-            # Auto-detect prompt file based on pred_len
-            if args.pred_len == 1:
-                prompt_data_path = 'prompts_short_term.json'
+            # Auto-detect prompt file based on pred_len and data version
+            is_v2 = '_v2' in getattr(args, 'data_path', '').lower() or getattr(args, 'use_v2_data', False)
+            if is_v2:
+                if args.pred_len == 1:
+                    prompt_data_path = 'prompts_v2_short_term.json'
+                else:
+                    prompt_data_path = 'prompts_v2_mid_term.json'
             else:
-                prompt_data_path = 'prompts_mid_term.json'
+                if args.pred_len == 1:
+                    prompt_data_path = 'prompts_short_term.json'
+                else:
+                    prompt_data_path = 'prompts_mid_term.json'
         
         data_set = Data(
             root_path=args.root_path,
