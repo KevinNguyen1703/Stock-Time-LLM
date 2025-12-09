@@ -1,0 +1,300 @@
+================================================================================
+                    TIME-LLM STOCK PREDICTION GUIDE
+                    VCB (Vietcombank) Stock Price Prediction
+================================================================================
+
+This guide explains how to use Time-LLM for VCB stock price prediction with
+technical indicators and dynamic prompts.
+
+================================================================================
+1. DATA PREPARATION
+================================================================================
+
+First, prepare the stock data with technical indicators:
+
+    python stock_data_preparation.py
+
+This script:
+- Reads the raw stock data from gia_VCB_2020-2025.csv
+- Calculates technical indicators: RSI, MACD, BB_Position, Volume, ROC
+- Creates processed datasets in ./dataset/dataset/stock/
+
+Output files:
+- vcb_stock_indicators.csv: Main dataset with all indicators
+- vcb_stock_short_term.csv: Same data, for short-term training
+- vcb_stock_mid_term.csv: Same data, for mid-term training
+- dataset_metadata.json: Dataset statistics and configuration
+- window_analysis.csv: Pre-computed analysis for each 60-day window
+
+================================================================================
+2. DYNAMIC PROMPT GENERATION (Professor Advice)
+================================================================================
+
+Generate per-sample "professor advice" prompts based on technical indicators.
+These prompts guide the model during training with expert-like market analysis.
+
+    # Without ChatGPT API (uses statistical professor-style analysis):
+    python prompt_generator.py \
+        --data_path ./dataset/dataset/stock/vcb_stock_indicators.csv \
+        --output_dir ./dataset/dataset/stock
+
+    # With ChatGPT API (generates more natural professor advice):
+    python prompt_generator.py \
+        --data_path ./dataset/dataset/stock/vcb_stock_indicators.csv \
+        --output_dir ./dataset/dataset/stock \
+        --use_api \
+        --api_key YOUR_OPENAI_API_KEY
+
+    # Or set environment variable:
+    export OPENAI_API_KEY="your-api-key"
+    python prompt_generator.py --use_api
+
+Example generated prompt (professor advice):
+    "Based on my analysis of VCB over the past 60 days, the technical picture 
+    is bullish. RSI trending up at 56.1 supports upward momentum. MACD positive 
+    and rising confirms bullish momentum. For the short-term (1 day), I expect 
+    upward price movement with moderate to high confidence."
+
+Output files:
+- prompts_short_term.json: Professor prompts for 1-day predictions
+- prompts_mid_term.json: Professor prompts for 60-day predictions
+
+================================================================================
+3. TRAINING WITH DYNAMIC PROMPTS
+================================================================================
+
+The training now supports per-sample dynamic prompts (professor advice).
+Each training sample gets its own prompt based on the technical indicators.
+
+Option A: Using Python script with dynamic prompts (recommended):
+-----------------------------------------------------------------
+
+Short-term prediction with dynamic prompts:
+
+    python run_stock_training.py \
+        --prediction_type short_term \
+        --use_dynamic_prompt \
+        --model TimeLLM_Stock \
+        --train_epochs 50 \
+        --batch_size 16
+
+Mid-term prediction with dynamic prompts:
+
+    python run_stock_training.py \
+        --prediction_type mid_term \
+        --use_dynamic_prompt \
+        --model TimeLLM_Stock \
+        --train_epochs 50 \
+        --batch_size 8
+
+Without dynamic prompts (original Time-LLM behavior):
+
+    python run_stock_training.py \
+        --prediction_type short_term \
+        --no-use_dynamic_prompt \
+        --model TimeLLM
+
+
+Option B: Using Shell scripts (without dynamic prompts):
+--------------------------------------------------------
+
+Short-term:
+    bash scripts/TimeLLM_Stock_ShortTerm.sh
+
+Mid-term:
+    bash scripts/TimeLLM_Stock_MidTerm.sh
+
+
+Key Training Parameters:
+- seq_len: 60 (use last 60 days as input)
+- pred_len: 1 (short-term) or 60 (mid-term)
+- features: MS (multivariate input, univariate output)
+- target: Adj Close (adjusted closing price)
+- llm_model: GPT2 (default) or LLAMA
+- use_dynamic_prompt: Enable per-sample professor advice
+- model: TimeLLM_Stock (supports dynamic prompts) or TimeLLM
+
+================================================================================
+4. EVALUATION
+================================================================================
+
+After training, evaluate the model:
+
+    python evaluate_stock_model.py \
+        --checkpoint_path ./checkpoints/YOUR_CHECKPOINT_DIR \
+        --prediction_type short_term \
+        --output_dir ./evaluation_results
+
+Evaluation Metrics:
+- Prediction Metrics: MSE, RMSE, MAE, MAPE, R²
+- Directional Accuracy: Win rate for predicting price direction
+- Trading Performance: Simulated P&L, Sharpe ratio, Max drawdown
+
+Example output:
+    📊 Prediction Metrics:
+       MSE:  0.0123
+       RMSE: 0.1109
+       MAE:  0.0891
+       MAPE: 1.52%
+       R²:   0.8734
+
+    🎯 Directional Accuracy (Win Rate):
+       Overall Accuracy: 58.32%
+       Up Precision:   61.45%
+       Down Precision: 54.21%
+
+    💰 Trading Performance:
+       Total Return:      +15.23%
+       Buy & Hold Return: +12.45%
+       Excess Return:     +2.78%
+       Sharpe Ratio:      1.45
+       Max Drawdown:      8.32%
+
+================================================================================
+5. TECHNICAL INDICATORS EXPLAINED
+================================================================================
+
+RSI (Relative Strength Index):
+- Range: 0-100
+- >70: Overbought (potential sell signal)
+- <30: Oversold (potential buy signal)
+- Period: 14 days
+
+MACD (Moving Average Convergence Divergence):
+- Positive: Bullish momentum
+- Negative: Bearish momentum
+- Fast: 12, Slow: 26, Signal: 9
+
+BB_Position (Bollinger Band Position):
+- Range: 0-1
+- Near 0: Price at lower band (potentially oversold)
+- Near 1: Price at upper band (potentially overbought)
+- 0.5: Price at middle band
+- Period: 20 days, 2 standard deviations
+
+Volume (Normalized):
+- Z-score normalized trading volume
+- >1: High volume (unusual activity)
+- <-1: Low volume
+
+ROC (Rate of Change):
+- Percentage change over period
+- Positive: Upward momentum
+- Negative: Downward momentum
+- Period: 10 days
+
+================================================================================
+6. MODEL ARCHITECTURE
+================================================================================
+
+The model uses Time-LLM architecture with:
+- Patch embedding for time series
+- GPT-2 (or LLAMA) as the backbone LLM
+- Reprogramming layer to align time series with language model
+- DYNAMIC prompts per sample (professor advice)
+
+Two models available:
+- TimeLLM: Original model with static dataset-level prompts
+- TimeLLM_Stock: Extended model with per-sample dynamic prompts
+
+Configuration:
+- seq_len: 60 (input window)
+- patch_len: 8
+- stride: 4
+- d_model: 32
+- d_ff: 128
+- llm_layers: 6
+
+================================================================================
+7. HOW DYNAMIC PROMPTS WORK
+================================================================================
+
+Instead of using a single hardcoded prompt for all samples, the model now
+receives unique "professor advice" for each training sample:
+
+Original (static prompt):
+    "Dataset description: Stock data. Task: forecast next 1 step..."
+    (Same for all samples)
+
+New (dynamic prompt per sample):
+    "Based on my analysis of VCB over the past 60 days, the technical picture 
+    is bullish. RSI trending up at 56.1 supports upward momentum. MACD positive 
+    and rising confirms bullish momentum. For the short-term (1 day), I expect 
+    upward price movement with moderate confidence."
+    (Unique for each 60-day window)
+
+The prompts are generated based on:
+1. RSI: Overbought/oversold conditions and trend
+2. MACD: Momentum direction and strength
+3. Bollinger Bands: Price position relative to bands
+4. Volume: Trading activity level
+5. ROC: Rate of change and momentum
+6. Overall sentiment: Bullish/bearish/neutral
+
+Prompt generation modes:
+- Statistical (default): Rule-based expert analysis
+- ChatGPT API: Natural language generation for more varied prompts
+
+================================================================================
+8. CUSTOMIZATION
+================================================================================
+
+To use with different stock data:
+1. Prepare CSV with columns: Date, Open, High, Low, Close, Adj Close, Volume
+2. Update input_file in stock_data_preparation.py
+3. Modify calculate_* functions if different indicators needed
+
+To change prediction horizon:
+- Modify pred_len parameter (1 for next day, 5 for week, 60 for quarter)
+
+To use different LLM:
+- Set --llm_model LLAMA (requires more memory)
+- Adjust --llm_dim accordingly (4096 for LLAMA-7B)
+
+================================================================================
+9. DIRECTORY STRUCTURE
+================================================================================
+
+Time-LLM-version2/
+├── stock_data_preparation.py     # Data preprocessing with indicators
+├── prompt_generator.py           # Professor-style prompt generation
+├── run_stock_training.py         # Training with dynamic prompts
+├── evaluate_stock_model.py       # Model evaluation with P&L
+├── models/
+│   ├── TimeLLM.py               # Original Time-LLM model
+│   └── TimeLLM_Stock.py         # Extended model with dynamic prompts
+├── scripts/
+│   ├── TimeLLM_Stock_ShortTerm.sh
+│   └── TimeLLM_Stock_MidTerm.sh
+├── data_provider/
+│   ├── stock_data_loader.py     # Stock data loader with prompt support
+│   └── data_factory.py          # Updated data factory
+├── dataset/
+│   ├── prompt_bank/
+│   │   └── Stock.txt            # Stock dataset description
+│   └── dataset/stock/
+│       ├── vcb_stock_indicators.csv
+│       ├── prompts_short_term.json    # Professor prompts (1-day)
+│       └── prompts_mid_term.json      # Professor prompts (60-day)
+└── evaluation_results/          # Saved evaluation outputs
+
+================================================================================
+10. TROUBLESHOOTING
+================================================================================
+
+Memory Issues:
+- Reduce batch_size (8 or 4)
+- Use --llm_model GPT2 instead of LLAMA
+- Reduce llm_layers (4 instead of 6)
+
+Training Issues:
+- Check data path: ./dataset/dataset/stock/vcb_stock_indicators.csv
+- Ensure technical indicators are calculated (no NaN values)
+- Verify prompt file exists: ./dataset/prompt_bank/Stock.txt
+
+Evaluation Issues:
+- Use correct prediction_type matching the trained model
+- Checkpoint path should contain 'checkpoint' file
+
+================================================================================
+

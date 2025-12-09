@@ -1,0 +1,18 @@
+VCB (Vietcombank) Stock Price Prediction Dataset
+
+This dataset contains daily stock price data with technical indicators for VCB, one of Vietnam's largest commercial banks.
+
+Technical Indicators:
+- RSI (Relative Strength Index): Momentum oscillator measuring speed and magnitude of price changes. Values > 70 indicate overbought, < 30 indicate oversold.
+- MACD (Moving Average Convergence Divergence): Trend-following momentum indicator. Positive values suggest bullish momentum, negative values suggest bearish.
+- BB_Position (Bollinger Band Position): Shows where price is relative to Bollinger Bands. 0 = at lower band, 1 = at upper band, 0.5 = at middle band.
+- Volume (Normalized): Z-score normalized trading volume. High values indicate unusual trading activity.
+- ROC (Rate of Change): Percentage change in price over a period, measuring momentum.
+- Adj Close: Adjusted closing price accounting for dividends and splits.
+
+Market Context:
+- VCB is a blue-chip stock in the Vietnamese market (HOSE)
+- Banking sector in Vietnam shows sensitivity to monetary policy and economic growth
+- Stock exhibits typical trading patterns with support and resistance levels
+
+The model should use these indicators to predict future adjusted closing prices.

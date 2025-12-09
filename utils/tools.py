@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -226,8 +227,30 @@ def test(args, accelerator, model, train_loader, vali_loader, criterion):
 def load_content(args):
     if 'ETT' in args.data:
         file = 'ETT'
+    elif 'Stock' in args.data:
+        file = 'Stock'
     else:
         file = args.data
-    with open('./dataset/prompt_bank/{0}.txt'.format(file), 'r') as f:
-        content = f.read()
+    
+    prompt_path = './dataset/prompt_bank/{0}.txt'.format(file)
+    
+    # Check both possible locations
+    if not os.path.exists(prompt_path):
+        prompt_path = './dataset/dataset/prompt_bank/{0}.txt'.format(file)
+    
+    try:
+        with open(prompt_path, 'r') as f:
+            content = f.read()
+    except FileNotFoundError:
+        # Default content for stock data
+        if 'Stock' in args.data:
+            content = (
+                "VCB (Vietcombank) Stock Price Prediction Dataset. "
+                "This dataset contains daily stock price data with technical indicators including "
+                "RSI, MACD, Bollinger Band Position, Volume, and Rate of Change. "
+                "The task is to predict future adjusted closing prices based on historical indicator patterns."
+            )
+        else:
+            content = "Time series forecasting dataset."
+    
     return content
