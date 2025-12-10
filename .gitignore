@@ -2,3 +2,8 @@ dataset/dataset/*
 __pycache__/
 reports/
 logs/
+.DS_Store
+.idea/
+.vscode/
+.pytest_cache/
+.pytest_cache/
