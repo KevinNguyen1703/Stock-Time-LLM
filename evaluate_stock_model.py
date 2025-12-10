@@ -18,6 +18,7 @@ from datetime import datetime
 
 from models import TimeLLM
 from models import TimeLLM_Stock
+from models import TimeLLM_Stock_V3
 from data_provider.data_factory import data_provider
 from utils.tools import load_content
 
@@ -281,7 +282,9 @@ def load_model(checkpoint_path, args, device='cuda'):
     args.content = load_content(args)
     
     # Initialize model based on type
-    if args.model == 'TimeLLM_Stock':
+    if args.model == 'TimeLLM_Stock_V3':
+        model = TimeLLM_Stock_V3.Model(args).float()
+    elif args.model == 'TimeLLM_Stock':
         model = TimeLLM_Stock.Model(args).float()
     else:
         model = TimeLLM.Model(args).float()
@@ -439,8 +442,8 @@ def main():
                         choices=['short_term', 'mid_term'])
     parser.add_argument('--use_dynamic_prompt', action='store_true', default=False,
                         help='Use dynamic prompts during evaluation')
-    parser.add_argument('--version', type=str, default=None, choices=['v0', 'v1', 'v2'],
-                        help='Auto-configure for specific model version (v0/v1/v2)')
+    parser.add_argument('--version', type=str, default=None, choices=['v0', 'v1', 'v2', 'v3'],
+                        help='Auto-configure for specific model version (v0/v1/v2/v3)')
     
     # Data config
     parser.add_argument('--data', type=str, default='Stock')
@@ -452,7 +455,7 @@ def main():
     
     # Model parameters
     parser.add_argument('--model', type=str, default='TimeLLM_Stock',
-                        choices=['TimeLLM', 'TimeLLM_Stock'])
+                        choices=['TimeLLM', 'TimeLLM_Stock', 'TimeLLM_Stock_V3'])
     parser.add_argument('--seq_len', type=int, default=60)
     parser.add_argument('--label_len', type=int, default=30)
     parser.add_argument('--pred_len', type=int, default=1)
@@ -518,6 +521,19 @@ def main():
         args.patch_len = 16
         args.stride = 8
         args.use_dynamic_prompt = True
+    elif args.version == 'v3':
+        # V3: Full enhancement - Multi-scale + Feature attention + ChatGPT prompts
+        print("Configuring for V3 (FULL: multi-scale + feature attention + ChatGPT)...")
+        args.model = 'TimeLLM_Stock_V3'
+        args.data_path = 'vcb_stock_indicators_v2.csv'
+        args.enc_in = 13
+        args.dec_in = 13
+        args.patch_len = 16
+        args.stride = 8
+        args.use_dynamic_prompt = True
+        args.use_multi_scale = True
+        args.use_feature_attention = True
+        args.attention_type = 'additive'
     
     # Set prediction length
     if args.prediction_type == 'short_term':
