@@ -439,6 +439,8 @@ def main():
                         choices=['short_term', 'mid_term'])
     parser.add_argument('--use_dynamic_prompt', action='store_true', default=False,
                         help='Use dynamic prompts during evaluation')
+    parser.add_argument('--version', type=str, default=None, choices=['v0', 'v1', 'v2'],
+                        help='Auto-configure for specific model version (v0/v1/v2)')
     
     # Data config
     parser.add_argument('--data', type=str, default='Stock')
@@ -466,8 +468,8 @@ def main():
     parser.add_argument('--dropout', type=float, default=0.1)
     parser.add_argument('--embed', type=str, default='timeF')
     parser.add_argument('--activation', type=str, default='gelu')
-    parser.add_argument('--patch_len', type=int, default=8)
-    parser.add_argument('--stride', type=int, default=4)
+    parser.add_argument('--patch_len', type=int, default=16)
+    parser.add_argument('--stride', type=int, default=8)
     parser.add_argument('--prompt_domain', type=int, default=1)
     parser.add_argument('--llm_model', type=str, default='GPT2')
     parser.add_argument('--llm_dim', type=int, default=768)
@@ -485,15 +487,53 @@ def main():
     
     args = parser.parse_args()
     
+    # Auto-configure for specific version
+    if args.version == 'v0':
+        # V0: Basic data, static prompt, original TimeLLM
+        print("Configuring for V0 (baseline)...")
+        args.model = 'TimeLLM'
+        args.data_path = 'vcb_stock_indicators_v0.csv'
+        args.enc_in = 5
+        args.dec_in = 5
+        args.patch_len = 16
+        args.stride = 8
+        args.use_dynamic_prompt = False
+    elif args.version == 'v1':
+        # V1: V2 data (with momentum), ChatGPT prompts, TimeLLM_Stock
+        print("Configuring for V1 (momentum + ChatGPT prompts)...")
+        args.model = 'TimeLLM_Stock'
+        args.data_path = 'vcb_stock_indicators_v2.csv'  # Uses V2 data with momentum
+        args.enc_in = 13
+        args.dec_in = 13
+        args.patch_len = 16
+        args.stride = 8
+        args.use_dynamic_prompt = True
+    elif args.version == 'v2':
+        # V2: Enhanced data, generated prompts, TimeLLM_Stock
+        print("Configuring for V2 (enhanced data + prompts)...")
+        args.model = 'TimeLLM_Stock'
+        args.data_path = 'vcb_stock_indicators_v2.csv'
+        args.enc_in = 13
+        args.dec_in = 13
+        args.patch_len = 16
+        args.stride = 8
+        args.use_dynamic_prompt = True
+    
     # Set prediction length
     if args.prediction_type == 'short_term':
         args.pred_len = 1
         if args.prompt_data_path is None:
-            args.prompt_data_path = 'prompts_short_term.json'
+            if args.version == 'v2':
+                args.prompt_data_path = 'prompts_v2_short_term.json'
+            else:
+                args.prompt_data_path = 'prompts_short_term.json'
     else:
         args.pred_len = 60
         if args.prompt_data_path is None:
-            args.prompt_data_path = 'prompts_mid_term.json'
+            if args.version == 'v2':
+                args.prompt_data_path = 'prompts_v2_mid_term.json'
+            else:
+                args.prompt_data_path = 'prompts_mid_term.json'
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {device}")

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Time-LLM Stock Prediction V1 - ChatGPT Prompts + Directional Loss
-# Uses basic data (same as V0) with ChatGPT dynamic prompts and directional loss
+# Uses V2 data (with momentum features) with ChatGPT dynamic prompts and directional loss
 
 # Configuration
 model_name=TimeLLM_Stock
@@ -15,7 +15,8 @@ echo "Prediction Type: $prediction_type"
 echo "Direction Weight: $direction_weight"
 echo ""
 echo "Configuration:"
-echo "  - Data: Basic indicators (same as V0)"
+echo "  - Data: V2 data with momentum features"
+echo "  - Features: 13 (including momentum_1d/3d/5d/10d)"
 echo "  - Prompts: ChatGPT-generated (dynamic)"
 echo "  - Loss: MSE + Directional"
 echo "============================================"
@@ -37,26 +38,26 @@ label_len=30
 # Set pred_len based on prediction type
 if [ "$prediction_type" == "short_term" ]; then
     pred_len=1
-    data_path="vcb_stock_indicators_v0.csv"
+    data_path="vcb_stock_indicators_v2.csv"  # V2 data with momentum
     prompt_data_path="prompts_short_term.json"  # ChatGPT prompts
     model_id="VCB_v1_chatgpt_60_1"
 else
     pred_len=60
-    data_path="vcb_stock_indicators_v0.csv"
+    data_path="vcb_stock_indicators_v2.csv"  # V2 data with momentum
     prompt_data_path="prompts_mid_term.json"  # ChatGPT prompts
     model_id="VCB_v1_chatgpt_60_60"
     batch_size=8
     learning_rate=0.0003
 fi
 
-# V1 uses 5 input features (same as V0)
-enc_in=5
-dec_in=5
+# V1 uses 13 input features (same as V2, with momentum)
+enc_in=13
+dec_in=13
 c_out=1
 
 echo ""
 echo "Model Configuration:"
-echo "  - Input features: $enc_in (RSI, MACD, BB_Position, Volume_Norm, ROC)"
+echo "  - Input features: $enc_in (RSI, MACD, BB, Volume, ROC + momentum_1d/3d/5d/10d + MA/Trend/Price/Vol)"
 echo "  - Sequence length: $seq_len"
 echo "  - Prediction length: $pred_len"
 echo "  - Data file: $data_path"

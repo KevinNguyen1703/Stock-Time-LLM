@@ -1,14 +1,16 @@
 """
 Stock Price Prediction Training V1
 Uses:
-- Basic indicators (same as V0): RSI, MACD, BB_Position, Volume_Norm, ROC
+- Enhanced indicators WITH momentum (same as V2): RSI, MACD, BB_Position, Volume_Norm, ROC + momentum features
 - ChatGPT-generated dynamic prompts (per-sample market analysis)
 - Directional loss (same as V2)
 
 This allows comparison:
-- V0: Basic data + Static prompt + MSE only
-- V1: Basic data + ChatGPT dynamic prompts + Directional loss (THIS)
-- V2: Enhanced data (momentum) + Generated prompts + Directional loss
+- V0: Basic data + Static prompt + MSE only (pure baseline)
+- V1: Enhanced data (momentum) + ChatGPT prompts + Directional loss (THIS)
+- V2: Enhanced data (momentum) + Generated trading signals + Directional loss
+
+V1 vs V2 comparison isolates the effect of ChatGPT prompts vs rule-based generated prompts.
 """
 
 import argparse
@@ -140,10 +142,10 @@ def parse_args():
     parser.add_argument('--model', type=str, default='TimeLLM_Stock')
     parser.add_argument('--seed', type=int, default=2021)
     
-    # Data config - V1 uses SAME basic data as V0
+    # Data config - V1 uses V2 data with momentum features (essential for directional loss)
     parser.add_argument('--data', type=str, default='Stock')
     parser.add_argument('--root_path', type=str, default='./dataset/dataset/stock/')
-    parser.add_argument('--data_path', type=str, default='vcb_stock_indicators_v0.csv')  # Same as V0
+    parser.add_argument('--data_path', type=str, default='vcb_stock_indicators_v2.csv')  # Uses momentum features
     parser.add_argument('--features', type=str, default='MS')
     parser.add_argument('--target', type=str, default='Adj Close')
     parser.add_argument('--freq', type=str, default='d')
@@ -155,9 +157,9 @@ def parse_args():
     parser.add_argument('--pred_len', type=int, default=1)
     parser.add_argument('--seasonal_patterns', type=str, default='Monthly')
     
-    # Model config - V1 has 5 input features (same as V0)
-    parser.add_argument('--enc_in', type=int, default=5)
-    parser.add_argument('--dec_in', type=int, default=5)
+    # Model config - V1 has 13 input features (same as V2, with momentum)
+    parser.add_argument('--enc_in', type=int, default=13)
+    parser.add_argument('--dec_in', type=int, default=13)
     parser.add_argument('--c_out', type=int, default=1)
     parser.add_argument('--d_model', type=int, default=32)
     parser.add_argument('--n_heads', type=int, default=8)
@@ -236,7 +238,8 @@ def train_model_v1(args):
     accelerator.print(f"\n{'='*60}")
     accelerator.print(f"Time-LLM Stock Prediction V1")
     accelerator.print(f"{'='*60}")
-    accelerator.print(f"Data: {args.data_path} (basic indicators, same as V0)")
+    accelerator.print(f"Data: {args.data_path} (with momentum features)")
+    accelerator.print(f"Features: {args.enc_in} (including momentum_1d/3d/5d/10d)")
     accelerator.print(f"Prompts: {args.prompt_data_path} (ChatGPT-generated)")
     accelerator.print(f"Loss: MSE + Directional (weight={args.direction_weight})")
     accelerator.print(f"{'='*60}\n")
@@ -382,8 +385,8 @@ def train_model_v1(args):
         
         config_dict = {k: v for k, v in vars(args).items() if k != 'content'}
         config_dict['version'] = 'v1'
-        config_dict['enhancements'] = 'ChatGPT dynamic prompts + Directional loss'
-        config_dict['data_version'] = 'v0 (basic indicators)'
+        config_dict['enhancements'] = 'Momentum features + ChatGPT dynamic prompts + Directional loss'
+        config_dict['data_version'] = 'v2 (with momentum features)'
         with open(os.path.join(path, 'config_v1.json'), 'w') as f:
             json.dump(config_dict, f, indent=2)
     
