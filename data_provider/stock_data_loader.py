@@ -17,6 +17,8 @@ warnings.filterwarnings('ignore')
 
 
 # Feature configurations for different data versions
+# V0 = V1 = Basic indicators only (for baseline comparison)
+FEATURES_V0 = ['RSI', 'MACD', 'BB_Position', 'Volume_Norm', 'ROC', 'Adj Close']
 FEATURES_V1 = ['RSI', 'MACD', 'BB_Position', 'Volume_Norm', 'ROC', 'Adj Close']
 FEATURES_V2 = [
     'RSI', 'MACD', 'BB_Position', 'Volume_Norm', 'ROC',
