@@ -170,20 +170,52 @@ class Model(nn.Module):
         self.patch_len = configs.patch_len
         self.stride = configs.stride
         
-        # ===== MULTI-SCALE PATCHING =====
-        # Capture patterns at multiple timescales (5, 10, 20 days)
+        # ===== MULTI-SCALE PATCHING (FFT-Optimized) =====
+        # Patch lengths discovered via FFT analysis of VCB stock data:
+        # - Top dominant periods: 40d, 50d, 29d (bi-monthly and monthly cycles)
+        # - Patches are sized to capture these patterns while ensuring enough patches per scale
         self.use_multi_scale = getattr(configs, 'use_multi_scale', True)
         
         if self.use_multi_scale:
-            # Short-term (5 days), Medium-term (10 days), Long-term (20 days)
-            self.patch_lens = [5, 10, 20]
-            self.strides = [3, 5, 10]
+            # Get patch configuration from configs or use FFT-optimized defaults
+            patch_preset = getattr(configs, 'patch_preset', 'fft_vcb')
+            
+            if patch_preset == 'fft_vcb':
+                # FFT-discovered optimal patches for VCB stock (seq_len=120)
+                # Captures: ~20d (monthly), ~40d (bi-monthly), ~50d (quarterly) patterns
+                self.patch_lens = [20, 40, 50]
+                self.strides = [10, 20, 25]
+            elif patch_preset == 'fft_vcb_short':
+                # For seq_len=60: smaller patches that still capture key patterns
+                self.patch_lens = [13, 23, 30]
+                self.strides = [6, 11, 15]
+            elif patch_preset == 'legacy':
+                # Original hardcoded values (weekly patterns)
+                self.patch_lens = [5, 10, 20]
+                self.strides = [3, 5, 10]
+            elif hasattr(configs, 'custom_patch_lens') and configs.custom_patch_lens:
+                # Custom configuration from args
+                self.patch_lens = configs.custom_patch_lens
+                self.strides = getattr(configs, 'custom_strides', 
+                                       [max(1, pl // 2) for pl in self.patch_lens])
+            else:
+                # Auto-calculate based on seq_len (proportional method)
+                self.patch_lens = [
+                    max(5, configs.seq_len // 6),   # Short-term (~20 for seq_len=120)
+                    max(10, configs.seq_len // 3),  # Medium-term (~40 for seq_len=120)
+                    max(15, configs.seq_len // 2 - 10)  # Long-term (~50 for seq_len=120)
+                ]
+                self.strides = [max(1, pl // 2) for pl in self.patch_lens]
+            
             self.patch_nums_list = [
                 int((configs.seq_len - pl) / st + 2) 
                 for pl, st in zip(self.patch_lens, self.strides)
             ]
             self.total_patch_nums = sum(self.patch_nums_list)
-            print(f"[Multi-Scale Patching] Enabled: {self.patch_lens} -> {self.patch_nums_list} patches (total: {self.total_patch_nums})")
+            print(f"[Multi-Scale Patching] Preset: {patch_preset}")
+            print(f"  patch_lens = {self.patch_lens}")
+            print(f"  strides    = {self.strides}")
+            print(f"  patches    = {self.patch_nums_list} (total: {self.total_patch_nums})")
         else:
             self.patch_nums = int((configs.seq_len - self.patch_len) / self.stride + 2)
             self.total_patch_nums = self.patch_nums
@@ -504,4 +536,6 @@ class Model(nn.Module):
         """Reset stored attention weights."""
         self.last_attention_weights = None
         self.last_feature_importance = None
+
+
 

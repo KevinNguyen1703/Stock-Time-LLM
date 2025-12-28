@@ -144,6 +144,15 @@ def parse_args():
                         choices=['additive', 'multiplicative', 'self'],
                         help='Type of feature attention')
     
+    # FFT-optimized patch configuration
+    parser.add_argument('--patch_preset', type=str, default='fft_vcb',
+                        choices=['fft_vcb', 'fft_vcb_short', 'legacy', 'auto'],
+                        help='Patch length preset: fft_vcb (for seq_len>=120), fft_vcb_short (seq_len=60), legacy, auto')
+    parser.add_argument('--custom_patch_lens', type=str, default=None,
+                        help='Custom patch lengths, comma-separated e.g., "20,40,50"')
+    parser.add_argument('--custom_strides', type=str, default=None,
+                        help='Custom strides, comma-separated e.g., "10,20,25"')
+    
     # Basic config
     parser.add_argument('--task_name', type=str, default='long_term_forecast')
     parser.add_argument('--is_training', type=int, default=1)
@@ -161,9 +170,9 @@ def parse_args():
     parser.add_argument('--freq', type=str, default='d')
     parser.add_argument('--checkpoints', type=str, default='./checkpoints/')
     
-    # Forecasting config
-    parser.add_argument('--seq_len', type=int, default=60)
-    parser.add_argument('--label_len', type=int, default=30)
+    # Forecasting config (FFT-optimized: seq_len=120 captures 40-50 day patterns)
+    parser.add_argument('--seq_len', type=int, default=120)
+    parser.add_argument('--label_len', type=int, default=60)
     parser.add_argument('--pred_len', type=int, default=1)
     parser.add_argument('--seasonal_patterns', type=str, default='Monthly')
     
@@ -207,22 +216,34 @@ def parse_args():
     
     args = parser.parse_args()
     
+    # Parse custom patch configurations if provided
+    if args.custom_patch_lens:
+        args.custom_patch_lens = [int(x.strip()) for x in args.custom_patch_lens.split(',')]
+    if args.custom_strides:
+        args.custom_strides = [int(x.strip()) for x in args.custom_strides.split(',')]
+    
+    # Auto-select patch preset based on seq_len if not specified
+    if args.patch_preset == 'fft_vcb' and args.seq_len < 100:
+        print(f"[Warning] seq_len={args.seq_len} is too short for 'fft_vcb' preset.")
+        print(f"[Auto] Switching to 'fft_vcb_short' preset.")
+        args.patch_preset = 'fft_vcb_short'
+    
     # Set paths based on prediction type
     # V3 uses ChatGPT-generated prompts
     if args.prediction_type == 'short_term':
         args.pred_len = 1
-        args.model_id = f'{args.model_id}_60_1'
+        args.model_id = f'{args.model_id}_{args.seq_len}_1'
         if args.prompt_data_path is None:
             args.prompt_data_path = 'prompts_short_term.json'  # ChatGPT prompts
     else:
         args.pred_len = 60
-        args.model_id = f'{args.model_id}_60_60'
+        args.model_id = f'{args.model_id}_{args.seq_len}_60'
         args.batch_size = 8
         args.learning_rate = 0.0003
         if args.prompt_data_path is None:
             args.prompt_data_path = 'prompts_mid_term.json'  # ChatGPT prompts
     
-    args.model_comment = f'{args.model_comment}-MultiScale-FeatureAttn-DirLoss'
+    args.model_comment = f'{args.model_comment}-FFT-{args.patch_preset}'
     
     return args
 
@@ -236,7 +257,7 @@ def train_model_v3(args):
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(kwargs_handlers=[ddp_kwargs])
     
-    setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_df{}_ms{}_fa{}'.format(
+    setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_df{}_dw{}-{}'.format(
         args.task_name, args.model_id, args.model, args.data,
         args.features, args.seq_len, args.label_len, args.pred_len,
         args.d_model, args.d_ff, int(args.use_multi_scale), int(args.use_feature_attention))
@@ -437,4 +458,6 @@ def train_model_v3(args):
 if __name__ == "__main__":
     args = parse_args()
     checkpoint_path, history = train_model_v3(args)
+
+
 
