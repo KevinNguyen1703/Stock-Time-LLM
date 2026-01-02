@@ -5,7 +5,7 @@ llm_layers=6
 
 master_port=00097
 num_process=8
-batch_size=24
+batch_size=72
 d_model=16
 d_ff=32
 
@@ -14,7 +14,7 @@ comment='TimeLLM-Weather-GPT2'
 accelerate launch --multi_gpu --mixed_precision bf16 --num_processes $num_process --main_process_port $master_port run_main.py \
   --task_name long_term_forecast \
   --is_training 1 \
-  --root_path ./dataset/dataset/weather/ \
+  --root_path ./dataset/weather/ \
   --data_path weather.csv \
   --model_id weather_96_96 \
   --model $model_name \
