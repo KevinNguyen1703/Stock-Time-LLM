@@ -17,316 +17,113 @@ class FrequencyAwarePatchBlock(nn.Module):
     """
     Learnable Frequency-Aware Multi-Scale Patching Block.
     
-    Uses FFT to analyze frequency content and attention mechanism to learn
-    optimal scale/patch length combinations dynamically for each input.
-    
-    Key Features:
-    - FFT-based frequency analysis to understand input periodicity
-    - Learnable scale queries that attend to frequency representations
-    - Adaptive weighting of multiple patch scales based on input characteristics
-    - End-to-end differentiable for joint optimization
+    Features:
+    - FFT-based frequency analysis
+    - Direct MLP mapping from frequency to scale weights
+    - Residual connections for gradient flow
     """
     
     def __init__(self, configs, candidate_patch_lens=None, dropout=0.1):
-        """
-        Args:
-            configs: Model configuration object
-            candidate_patch_lens: List of candidate patch lengths to consider.
-                                  If None, uses adaptive defaults based on seq_len.
-            dropout: Dropout rate
-        """
         super(FrequencyAwarePatchBlock, self).__init__()
         
         self.seq_len = configs.seq_len
         self.d_model = configs.d_model
         
-        # Auto-compute candidate patch lengths based on sequence length if not provided
+        # Auto-compute candidate patch lengths if not provided
         if candidate_patch_lens is None:
-            # Generate patch lengths that cover different frequency ranges
-            # Typically: very short (high freq), short, medium, long (low freq)
             base = max(4, self.seq_len // 24)
-            candidate_patch_lens = [
-                base,                          # High frequency capture
-                base * 2,                      # Medium-high frequency
-                base * 4,                      # Medium frequency
-                min(base * 8, self.seq_len // 2),  # Low frequency
-            ]
-            # Remove duplicates and sort
+            candidate_patch_lens = [base, base * 2, base * 4, min(base * 8, self.seq_len // 2)]
             candidate_patch_lens = sorted(list(set(candidate_patch_lens)))
         
         self.candidate_patch_lens = candidate_patch_lens
         self.n_scales = len(candidate_patch_lens)
-        
-        # Compute strides (50% overlap for each scale)
         self.strides = [max(1, pl // 2) for pl in candidate_patch_lens]
-        
-        # Compute number of patches per scale
         self.patch_nums_list = [
             int((self.seq_len - pl) / st + 2)
             for pl, st in zip(self.candidate_patch_lens, self.strides)
         ]
         self.total_patch_nums = sum(self.patch_nums_list)
         
-        # ========== Frequency Analysis Module ==========
-        self.freq_dim = self.seq_len // 2 + 1  # Number of frequency bins from rfft
-        
-        # Frequency magnitude encoder
+        # Frequency encoder: FFT magnitude -> d_model
+        self.freq_dim = self.seq_len // 2 + 1
         self.freq_encoder = nn.Sequential(
             nn.Linear(self.freq_dim, self.d_model),
-            nn.LayerNorm(self.d_model),
             nn.GELU(),
             nn.Linear(self.d_model, self.d_model),
-            nn.LayerNorm(self.d_model)
         )
         
-        # Frequency phase encoder (phase contains temporal info)
-        self.phase_encoder = nn.Sequential(
-            nn.Linear(self.freq_dim, self.d_model // 2),
-            nn.GELU(),
-            nn.Linear(self.d_model // 2, self.d_model)
-        )
-        
-        # Combine magnitude and phase
-        self.freq_fusion = nn.Linear(self.d_model * 2, self.d_model)
-        
-        # ========== Learnable Scale Selection Module ==========
-        # Learnable scale queries - each represents a patch length candidate
-        self.scale_queries = nn.Parameter(
-            torch.randn(self.n_scales, self.d_model) * 0.02
-        )
-        
-        # Cross-attention: scale queries attend to frequency content
-        self.scale_attention = nn.MultiheadAttention(
-            embed_dim=self.d_model,
-            num_heads=configs.n_heads,
-            dropout=dropout,
-            batch_first=True
-        )
-        
-        # Scale weight projection (outputs soft attention over scales)
-        self.scale_weight_proj = nn.Sequential(
+        # Direct scale predictor: d_model -> n_scales
+        self.scale_predictor = nn.Sequential(
             nn.Linear(self.d_model, self.d_model // 2),
             nn.GELU(),
-            nn.Linear(self.d_model // 2, 1)
+            nn.Linear(self.d_model // 2, self.n_scales),
         )
         
-        # Learnable prior bias for each scale (can learn dataset-specific preferences)
-        self.scale_prior = nn.Parameter(torch.zeros(self.n_scales))
+        # Learnable scale bias
+        self.scale_bias = nn.Parameter(torch.zeros(self.n_scales))
         
-        # Temperature for scale softmax (learnable for adaptive sharpness)
-        self.temperature = nn.Parameter(torch.ones(1))
-        
-        # ========== Multi-Scale Patch Embedding Module ==========
+        # Patch embeddings per scale
         self.padding_layers = nn.ModuleList([
             ReplicationPad1d((0, st)) for st in self.strides
         ])
-        
-        self.patch_value_embeddings = nn.ModuleList([
-            TokenEmbedding(pl, self.d_model)
-            for pl in self.candidate_patch_lens
+        self.patch_embeddings = nn.ModuleList([
+            TokenEmbedding(pl, self.d_model) for pl in self.candidate_patch_lens
         ])
         
-        # Scale-specific positional encodings
-        self.scale_pos_encodings = nn.ParameterList([
-            nn.Parameter(torch.randn(1, pn, self.d_model) * 0.02)
-            for pn in self.patch_nums_list
-        ])
-        
-        # Scale-specific projection (to allow scale-dependent transformations)
-        self.scale_projections = nn.ModuleList([
-            nn.Linear(self.d_model, self.d_model)
-            for _ in range(self.n_scales)
+        # Residual projection per scale
+        self.residual_proj = nn.ModuleList([
+            nn.Linear(self.d_model, self.d_model) for _ in range(self.n_scales)
         ])
         
         self.dropout = nn.Dropout(dropout)
         
-        print(f"[FrequencyAwarePatchBlock] Initialized with:")
-        print(f"  - Candidate patch lengths: {self.candidate_patch_lens}")
-        print(f"  - Strides: {self.strides}")
-        print(f"  - Patches per scale: {self.patch_nums_list}")
-        print(f"  - Total patches: {self.total_patch_nums}")
-    
-    def compute_frequency_features(self, x):
-        """
-        Compute frequency-domain features using FFT.
-        
-        Args:
-            x: Input tensor of shape (B, T) or (B, T, 1)
-            
-        Returns:
-            freq_repr: Frequency representation (B, d_model)
-        """
-        if x.dim() == 3:
-            x = x.squeeze(-1)  # (B, T)
-        
-        # Apply FFT (always returns float32 for complex operations)
-        x_fft = torch.fft.rfft(x.float(), dim=-1)  # (B, freq_dim) complex
-        
-        # Extract magnitude and phase
-        magnitude = torch.abs(x_fft)  # (B, freq_dim)
-        phase = torch.angle(x_fft)    # (B, freq_dim)
-        
-        # Normalize magnitude (log scale for better gradient flow)
-        magnitude = torch.log1p(magnitude)
-        
-        # Cast to match model dtype (handles mixed precision training)
-        target_dtype = next(self.freq_encoder.parameters()).dtype
-        magnitude = magnitude.to(target_dtype)
-        phase = phase.to(target_dtype)
-        
-        # Encode magnitude and phase separately
-        mag_embed = self.freq_encoder(magnitude)    # (B, d_model)
-        phase_embed = self.phase_encoder(phase)     # (B, d_model)
-        
-        # Fuse magnitude and phase information
-        freq_repr = self.freq_fusion(
-            torch.cat([mag_embed, phase_embed], dim=-1)
-        )  # (B, d_model)
-        
-        return freq_repr
-    
-    def compute_scale_weights(self, freq_repr):
-        """
-        Compute attention weights for each patch scale based on frequency content.
-        
-        Args:
-            freq_repr: Frequency representation (B, d_model)
-            
-        Returns:
-            scale_weights: Soft attention weights for each scale (B, n_scales)
-        """
-        B = freq_repr.shape[0]
-        
-        # Expand frequency representation for attention
-        freq_repr = freq_repr.unsqueeze(1)  # (B, 1, d_model)
-        
-        # Expand scale queries for batch
-        scale_queries = self.scale_queries.unsqueeze(0).expand(B, -1, -1)  # (B, n_scales, d_model)
-        
-        # Cross-attention: scale queries attend to frequency content
-        scale_repr, attn_weights = self.scale_attention(
-            query=scale_queries,
-            key=freq_repr,
-            value=freq_repr
-        )  # scale_repr: (B, n_scales, d_model)
-        
-        # Project to scale logits
-        scale_logits = self.scale_weight_proj(scale_repr).squeeze(-1)  # (B, n_scales)
-        
-        # Add learnable prior bias
-        scale_logits = scale_logits + self.scale_prior
-        
-        # Apply temperature-scaled softmax
-        temperature = torch.clamp(self.temperature, min=0.1, max=10.0)
-        scale_weights = F.softmax(scale_logits / temperature, dim=-1)  # (B, n_scales)
-        
-        return scale_weights, attn_weights
-    
-    def create_patches(self, x, scale_idx):
-        """
-        Create patches for a specific scale.
-        
-        Args:
-            x: Input tensor (B, N, T) where N is n_vars
-            scale_idx: Index of the scale to use
-            
-        Returns:
-            patches: Patch embeddings (B*N, num_patches, d_model)
-            n_vars: Number of variables
-        """
-        n_vars = x.shape[1]
-        patch_len = self.candidate_patch_lens[scale_idx]
-        stride = self.strides[scale_idx]
-        
-        # Pad sequence
-        x_padded = self.padding_layers[scale_idx](x)  # (B, N, T + stride)
-        
-        # Unfold to create patches
-        patches = x_padded.unfold(dimension=-1, size=patch_len, step=stride)
-        # patches: (B, N, num_patches, patch_len)
-        
-        # Reshape for embedding
-        B, N, num_patches, pl = patches.shape
-        patches = patches.reshape(B * N, num_patches, pl)  # (B*N, num_patches, patch_len)
-        
-        # Apply patch embedding
-        patches = self.patch_value_embeddings[scale_idx](patches)  # (B*N, num_patches, d_model)
-        
-        # Add positional encoding
-        patches = patches + self.scale_pos_encodings[scale_idx]
-        
-        # Apply scale-specific projection
-        patches = self.scale_projections[scale_idx](patches)
-        
-        return patches, n_vars
+        print(f"[FrequencyAwarePatchBlock] patch_lens={self.candidate_patch_lens}, total_patches={self.total_patch_nums}")
     
     def forward(self, x):
         """
-        Forward pass with learnable frequency-aware multi-scale patching.
-        
         Args:
-            x: Input tensor (B, N, T) after permutation, where:
-               B = batch size, N = number of variables, T = sequence length
-               
+            x: (B, N, T) - batch, variables, time
         Returns:
-            enc_out: Multi-scale patch embeddings (B*N, total_patches, d_model)
-            n_vars: Number of variables
-            scale_weights: Learned scale attention weights (B*N, n_scales) - for analysis
+            enc_out: (B*N, total_patches, d_model)
+            n_vars: number of variables
+            scale_weights: (B*N, n_scales)
         """
         B, N, T = x.shape
-        
-        # Reshape for frequency analysis: (B*N, T)
         x_flat = x.reshape(B * N, T)
         
-        # ========== Frequency Analysis ==========
-        freq_repr = self.compute_frequency_features(x_flat)  # (B*N, d_model)
+        # FFT -> frequency features
+        x_fft = torch.fft.rfft(x_flat.float(), dim=-1)
+        magnitude = torch.log1p(torch.abs(x_fft))
+        magnitude = magnitude.to(next(self.freq_encoder.parameters()).dtype)
+        freq_repr = self.freq_encoder(magnitude)  # (B*N, d_model)
         
-        # ========== Compute Scale Weights ==========
-        scale_weights, _ = self.compute_scale_weights(freq_repr)  # (B*N, n_scales)
+        # Direct scale prediction
+        scale_logits = self.scale_predictor(freq_repr) + self.scale_bias  # (B*N, n_scales)
+        scale_weights = F.softmax(scale_logits, dim=-1)
         
-        # ========== Multi-Scale Patching with Learned Weights ==========
+        # Multi-scale patching with learned weights
         all_patches = []
+        target_dtype = next(self.patch_embeddings[0].parameters()).dtype
         
-        for scale_idx in range(self.n_scales):
-            # Create patches for this scale
-            patches, n_vars = self.create_patches(x, scale_idx)  # (B*N, num_patches_i, d_model)
+        for i in range(self.n_scales):
+            # Create patches
+            x_pad = self.padding_layers[i](x)
+            patches = x_pad.unfold(dimension=-1, size=self.candidate_patch_lens[i], step=self.strides[i])
+            patches = patches.reshape(B * N, patches.shape[2], patches.shape[3])
             
-            # Get weight for this scale
-            weight = scale_weights[:, scale_idx:scale_idx+1].unsqueeze(-1)  # (B*N, 1, 1)
+            # Cast to model dtype for mixed precision compatibility
+            patches = patches.to(target_dtype)
             
-            # Weight the patches by scale importance
-            weighted_patches = patches * weight
+            # Embed + residual
+            patches = self.patch_embeddings[i](patches)
+            patches = patches + self.residual_proj[i](patches)  # Residual path
             
-            all_patches.append(weighted_patches)
+            # Weight by scale importance
+            weight = scale_weights[:, i:i+1].unsqueeze(-1)
+            all_patches.append(patches * weight)
         
-        # Concatenate all scales
-        enc_out = torch.cat(all_patches, dim=1)  # (B*N, total_patches, d_model)
-        enc_out = self.dropout(enc_out)
-        
-        return enc_out, n_vars, scale_weights
-    
-    def get_scale_statistics(self, scale_weights):
-        """
-        Utility function to analyze learned scale preferences.
-        
-        Args:
-            scale_weights: Scale weights tensor (B, n_scales)
-            
-        Returns:
-            dict: Statistics about scale usage
-        """
-        with torch.no_grad():
-            mean_weights = scale_weights.mean(dim=0)
-            std_weights = scale_weights.std(dim=0)
-            dominant_scale = torch.argmax(mean_weights).item()
-            
-            return {
-                'mean_weights': mean_weights.cpu().numpy(),
-                'std_weights': std_weights.cpu().numpy(),
-                'dominant_patch_len': self.candidate_patch_lens[dominant_scale],
-                'patch_lens': self.candidate_patch_lens,
-                'temperature': self.temperature.item()
-            }
+        enc_out = self.dropout(torch.cat(all_patches, dim=1))
+        return enc_out, N, scale_weights
 
 
 class FlattenHead(nn.Module):
@@ -640,93 +437,42 @@ class Model(nn.Module):
         return lags
     
     def get_scale_analysis(self):
-        """
-        Get analysis of learned scale weights (only for frequency_aware mode).
-        
-        Returns:
-            dict: Statistics about scale usage, or None if not using frequency_aware mode
-        """
+        """Get analysis of learned scale weights."""
         if self.patching_mode != 'frequency_aware':
             return None
-        
         if hasattr(self, '_last_scale_weights') and self._last_scale_weights is not None:
-            return self.freq_patch_block.get_scale_statistics(self._last_scale_weights)
+            weights = self._last_scale_weights.mean(dim=0).float().cpu().numpy()
+            return {'weights': weights, 'patch_lens': self.freq_patch_block.candidate_patch_lens}
         return None
     
     def get_learnable_patch_params(self):
-        """
-        Get the learnable parameters related to patch length selection.
-        Useful for analysis and debugging.
-        
-        Returns:
-            dict: Dictionary of learnable parameters
-        """
+        """Get learnable patch parameters."""
         if self.patching_mode != 'frequency_aware':
             return None
-        
         return {
-            'scale_queries': self.freq_patch_block.scale_queries.detach().cpu(),
-            'scale_prior': self.freq_patch_block.scale_prior.detach().cpu(),
-            'temperature': self.freq_patch_block.temperature.detach().cpu(),
-            'candidate_patch_lens': self.freq_patch_block.candidate_patch_lens,
+            'scale_bias': self.freq_patch_block.scale_bias.detach().float().cpu(),
+            'patch_lens': self.freq_patch_block.candidate_patch_lens,
         }
     
     def print_patch_info(self, epoch=None):
-        """
-        Print the current learned patch length information.
-        Call this after each epoch to monitor learning progress.
-        
-        Args:
-            epoch: Optional epoch number for logging
-        """
+        """Print learned patch length information."""
         if self.patching_mode != 'frequency_aware':
-            print("[Patch Info] Not using frequency_aware mode, skipping...")
             return
         
         with torch.no_grad():
             patch_lens = self.freq_patch_block.candidate_patch_lens
-            scale_prior = self.freq_patch_block.scale_prior.detach().cpu().numpy()
-            temperature = self.freq_patch_block.temperature.item()
+            scale_bias = self.freq_patch_block.scale_bias.detach().float().cpu().numpy()
+            bias_weights = F.softmax(self.freq_patch_block.scale_bias.float(), dim=0).cpu().numpy()
             
-            # Compute softmax of scale_prior to show learned preferences
-            prior_weights = torch.softmax(self.freq_patch_block.scale_prior / temperature, dim=0)
-            prior_weights = prior_weights.cpu().numpy()
-            
-            # Find dominant patch length based on prior
-            dominant_idx = prior_weights.argmax()
-            dominant_patch_len = patch_lens[dominant_idx]
-            
-            # Build output string
             epoch_str = f"Epoch {epoch}" if epoch is not None else "Current"
+            print(f"\n[Patch Info] {epoch_str}")
+            print(f"  Scale Bias: {scale_bias}")
+            print(f"  Weights:    {bias_weights}")
+            print(f"  Patch Lens: {patch_lens}")
             
-            print(f"\n{'='*60}")
-            print(f"[Patch Length Info] {epoch_str}")
-            print(f"{'='*60}")
-            print(f"  Temperature: {temperature:.4f}")
-            print(f"  Scale Prior (raw):    {scale_prior}")
-            print(f"  Scale Prior (softmax): {prior_weights}")
-            print(f"  Candidate Patch Lengths: {patch_lens}")
-            print(f"  Learned Preferences:")
-            for i, (pl, pw) in enumerate(zip(patch_lens, prior_weights)):
-                bar = '█' * int(pw * 30)
-                marker = " ← dominant" if i == dominant_idx else ""
-                print(f"    patch_len={pl:3d}: {pw:.4f} |{bar}{marker}")
-            print(f"  Dominant Patch Length: {dominant_patch_len}")
-            
-            # Also show last batch statistics if available
             if hasattr(self, '_last_scale_weights') and self._last_scale_weights is not None:
-                last_weights = self._last_scale_weights.mean(dim=0).cpu().numpy()
-                print(f"  Last Batch Avg Weights: {last_weights}")
-            print(f"{'='*60}\n")
-            
-            return {
-                'epoch': epoch,
-                'temperature': temperature,
-                'scale_prior': scale_prior,
-                'prior_weights': prior_weights,
-                'patch_lens': patch_lens,
-                'dominant_patch_len': dominant_patch_len
-            }
+                last_weights = self._last_scale_weights.mean(dim=0).float().cpu().numpy()
+                print(f"  Last Batch: {last_weights}")
 
 
 class ReprogrammingLayer(nn.Module):
