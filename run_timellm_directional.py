@@ -4,8 +4,7 @@ TimeLLM Training Script with Directional Loss Support
 This script trains the TimeLLM model with FFT+Attention (frequency_aware patching)
 and provides options for:
 - With/Without directional loss for comparison
-- Winrate and P&L evaluation on validation and test sets
-- Comprehensive logging for comparison experiments
+- Winrate and Confusion Matrix evaluation on validation and test sets
 
 Usage:
     # Without directional loss (baseline)
@@ -28,7 +27,6 @@ import random
 import numpy as np
 import os
 import json
-from datetime import datetime
 
 from models import TimeLLM
 from data_provider.data_factory import data_provider
@@ -39,133 +37,29 @@ os.environ['CURL_CA_BUNDLE'] = ''
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:64"
 
 
-def calculate_trading_pnl(predictions, actuals, prev_values, 
-                          initial_capital=100000000, transaction_cost=0.001):
+def vali_with_metrics(args, accelerator, model, vali_data, vali_loader, criterion, mae_metric):
     """
-    Calculate P&L from simulated trading based on predictions.
+    Validation with winrate and confusion matrix.
     
-    Args:
-        predictions: numpy array of shape (n_samples, pred_len, features)
-        actuals: numpy array of shape (n_samples, pred_len, features)
-        prev_values: numpy array of shape (n_samples,) - previous actual values
-        initial_capital: Starting capital in VND
-        transaction_cost: Transaction cost as percentage (default 0.1%)
-    
-    Returns:
-        Dictionary with trading metrics
-    """
-    capital = float(initial_capital)
-    position = 0  # 0: no position, 1: long
-    shares = 0
-    entry_price = 0
-    
-    trades = []
-    capital_history = [capital]
-    
-    threshold = 0.002  # 0.2% threshold to trigger trade
-    
-    n_samples = len(predictions)
-    
-    for i in range(n_samples):
-        prev_price = float(prev_values[i])
-        pred_price = float(predictions[i, 0, 0]) if len(predictions.shape) == 3 else float(predictions[i, 0])
-        actual_price = float(actuals[i, 0, 0]) if len(actuals.shape) == 3 else float(actuals[i, 0])
-        
-        # Skip if prices are invalid
-        if prev_price <= 0 or actual_price <= 0:
-            capital_history.append(capital_history[-1])
-            continue
-        
-        pred_change = (pred_price - prev_price) / prev_price
-        current_price = actual_price
-        
-        # BUY signal: predicted to go up
-        if pred_change > threshold and position == 0:
-            shares = int((capital * 0.95) / current_price)
-            if shares > 0:
-                cost = shares * current_price * (1 + transaction_cost)
-                if cost <= capital:
-                    capital -= cost
-                    entry_price = current_price
-                    position = 1
-                    trades.append({'type': 'buy', 'price': current_price, 'shares': shares})
-        
-        # SELL signal: predicted to go down
-        elif pred_change < -threshold and position == 1:
-            revenue = shares * current_price * (1 - transaction_cost)
-            pnl = revenue - (entry_price * shares)
-            capital += revenue
-            trades.append({'type': 'sell', 'price': current_price, 'shares': shares, 'pnl': pnl})
-            position = 0
-            shares = 0
-            entry_price = 0
-        
-        # Calculate current portfolio value
-        if position == 1:
-            total_value = capital + shares * actual_price
-        else:
-            total_value = capital
-        
-        capital_history.append(float(total_value))
-    
-    # Close any remaining position at the end
-    if position == 1 and len(actuals) > 0:
-        final_price = float(actuals[-1, 0, 0]) if len(actuals.shape) == 3 else float(actuals[-1, 0])
-        revenue = shares * final_price * (1 - transaction_cost)
-        pnl = revenue - (entry_price * shares)
-        capital += revenue
-        trades.append({'type': 'sell_final', 'price': final_price, 'shares': shares, 'pnl': pnl})
-        position = 0
-        shares = 0
-    
-    final_capital = float(capital)
-    total_return = (final_capital - initial_capital) / initial_capital * 100
-    
-    # Buy and hold return
-    if n_samples > 0:
-        first_price = float(prev_values[0])
-        last_price = float(actuals[-1, 0, 0]) if len(actuals.shape) == 3 else float(actuals[-1, 0])
-        buy_hold_return = (last_price - first_price) / first_price * 100 if first_price > 0 else 0
-    else:
-        buy_hold_return = 0
-    
-    # Trade statistics
-    winning_trades = sum(1 for t in trades if t.get('pnl', 0) > 0)
-    total_closed_trades = sum(1 for t in trades if 'pnl' in t)
-    trade_win_rate = winning_trades / (total_closed_trades + 1e-8) * 100
-    
-    return {
-        'initial_capital': initial_capital,
-        'final_capital': float(final_capital),
-        'total_return_pct': float(total_return),
-        'buy_hold_return_pct': float(buy_hold_return),
-        'excess_return_pct': float(total_return - buy_hold_return),
-        'total_trades': int(total_closed_trades),
-        'winning_trades': int(winning_trades),
-        'trade_win_rate_pct': float(trade_win_rate),
-    }
-
-
-def vali_with_metrics(args, accelerator, model, vali_data, vali_loader, criterion, mae_metric,
-                      compute_trading=True):
-    """
-    Validation with comprehensive metrics including winrate and P&L.
+    Confusion Matrix:
+        - TP (True Positive): Predicted UP, Actual UP
+        - TN (True Negative): Predicted DOWN, Actual DOWN  
+        - FP (False Positive): Predicted UP, Actual DOWN
+        - FN (False Negative): Predicted DOWN, Actual UP
     
     Returns:
         total_loss: Average MSE loss
         total_mae_loss: Average MAE loss
-        direction_acc: Directional accuracy (winrate) percentage
-        trading_metrics: Dictionary with P&L metrics (if compute_trading=True)
+        metrics: Dictionary with winrate and confusion matrix
     """
     total_loss = []
     total_mae_loss = []
-    correct_directions = 0
-    total_samples = 0
     
-    # For trading calculation
-    all_predictions = []
-    all_actuals = []
-    all_prev_values = []
+    # Confusion matrix counters
+    tp = 0  # Predicted UP, Actual UP
+    tn = 0  # Predicted DOWN, Actual DOWN
+    fp = 0  # Predicted UP, Actual DOWN
+    fn = 0  # Predicted DOWN, Actual UP
     
     model.eval()
     
@@ -199,7 +93,7 @@ def vali_with_metrics(args, accelerator, model, vali_data, vali_loader, criterio
             pred = outputs.detach()
             true = batch_y.detach()
             
-            # MSE loss (use base MSE for comparison, not directional)
+            # MSE loss
             if hasattr(criterion, 'mse'):
                 loss = criterion.mse(pred, true)
             else:
@@ -209,32 +103,61 @@ def vali_with_metrics(args, accelerator, model, vali_data, vali_loader, criterio
             total_loss.append(loss.item())
             total_mae_loss.append(mae_loss.item())
             
-            # Calculate directional accuracy
-            pred_dir = (pred[:, 0, 0] > prev_values).float()
-            true_dir = (true[:, 0, 0] > prev_values).float()
-            correct_directions += (pred_dir == true_dir).sum().item()
-            total_samples += pred.shape[0]
+            # Calculate confusion matrix
+            # pred_up = 1 if predicted price > previous price, else 0
+            # true_up = 1 if actual price > previous price, else 0
+            pred_up = (pred[:, 0, 0] > prev_values)
+            true_up = (true[:, 0, 0] > prev_values)
             
-            # Store for trading calculation
-            if compute_trading:
-                all_predictions.append(pred.cpu().numpy())
-                all_actuals.append(true.cpu().numpy())
-                all_prev_values.append(prev_values.cpu().numpy())
+            # TP: pred_up=True, true_up=True
+            tp += (pred_up & true_up).sum().item()
+            # TN: pred_up=False, true_up=False  
+            tn += (~pred_up & ~true_up).sum().item()
+            # FP: pred_up=True, true_up=False
+            fp += (pred_up & ~true_up).sum().item()
+            # FN: pred_up=False, true_up=True
+            fn += (~pred_up & true_up).sum().item()
     
     total_loss = np.average(total_loss)
     total_mae_loss = np.average(total_mae_loss)
-    direction_acc = correct_directions / total_samples * 100 if total_samples > 0 else 0
     
-    # Calculate trading metrics
-    trading_metrics = None
-    if compute_trading and len(all_predictions) > 0:
-        predictions = np.concatenate(all_predictions, axis=0)
-        actuals = np.concatenate(all_actuals, axis=0)
-        prev_values = np.concatenate(all_prev_values, axis=0)
-        trading_metrics = calculate_trading_pnl(predictions, actuals, prev_values)
+    # Calculate metrics from confusion matrix
+    total = tp + tn + fp + fn
+    winrate = (tp + tn) / total * 100 if total > 0 else 0
+    
+    # Precision and Recall for UP predictions
+    precision_up = tp / (tp + fp) * 100 if (tp + fp) > 0 else 0
+    recall_up = tp / (tp + fn) * 100 if (tp + fn) > 0 else 0
+    
+    # Precision and Recall for DOWN predictions
+    precision_down = tn / (tn + fn) * 100 if (tn + fn) > 0 else 0
+    recall_down = tn / (tn + fp) * 100 if (tn + fp) > 0 else 0
+    
+    # F1 scores
+    f1_up = 2 * precision_up * recall_up / (precision_up + recall_up) if (precision_up + recall_up) > 0 else 0
+    f1_down = 2 * precision_down * recall_down / (precision_down + recall_down) if (precision_down + recall_down) > 0 else 0
+    
+    metrics = {
+        'winrate': winrate,
+        'tp': tp,
+        'tn': tn,
+        'fp': fp,
+        'fn': fn,
+        'total': total,
+        'precision_up': precision_up,
+        'recall_up': recall_up,
+        'precision_down': precision_down,
+        'recall_down': recall_down,
+        'f1_up': f1_up,
+        'f1_down': f1_down,
+        'actual_up': tp + fn,
+        'actual_down': tn + fp,
+        'pred_up': tp + fp,
+        'pred_down': tn + fn,
+    }
     
     model.train()
-    return total_loss, total_mae_loss, direction_acc, trading_metrics
+    return total_loss, total_mae_loss, metrics
 
 
 def parse_args():
@@ -421,10 +344,8 @@ def main():
         # Training history
         history = {
             'train_loss': [], 'vali_loss': [], 'test_loss': [],
-            'train_mae': [], 'vali_mae': [], 'test_mae': [],
             'vali_winrate': [], 'test_winrate': [],
-            'vali_pnl': [], 'test_pnl': [],
-            'vali_excess_return': [], 'test_excess_return': []
+            'vali_metrics': [], 'test_metrics': []
         }
         
         best_vali_loss = float('inf')
@@ -506,48 +427,38 @@ def main():
                 accelerator.print("")
             
             # Validation
-            vali_loss, vali_mae, vali_winrate, vali_trading = vali_with_metrics(
-                args, accelerator, model, vali_data, vali_loader, criterion, mae_metric,
-                compute_trading=True
+            vali_loss, vali_mae, vali_metrics = vali_with_metrics(
+                args, accelerator, model, vali_data, vali_loader, criterion, mae_metric
             )
             
             # Test
-            test_loss, test_mae, test_winrate, test_trading = vali_with_metrics(
-                args, accelerator, model, test_data, test_loader, criterion, mae_metric,
-                compute_trading=True
+            test_loss, test_mae, test_metrics = vali_with_metrics(
+                args, accelerator, model, test_data, test_loader, criterion, mae_metric
             )
             
             # Log results
-            accelerator.print(f"  Vali Loss: {vali_loss:.6f} | Vali MAE: {vali_mae:.6f} | Vali Winrate: {vali_winrate:.2f}%")
-            if vali_trading:
-                accelerator.print(f"  Vali P&L: {vali_trading['total_return_pct']:+.2f}% | Excess: {vali_trading['excess_return_pct']:+.2f}%")
+            accelerator.print(f"  Vali | Loss: {vali_loss:.6f} | Winrate: {vali_metrics['winrate']:.2f}%")
+            accelerator.print(f"       | TP:{vali_metrics['tp']} TN:{vali_metrics['tn']} FP:{vali_metrics['fp']} FN:{vali_metrics['fn']}")
+            accelerator.print(f"       | Prec_UP:{vali_metrics['precision_up']:.1f}% Rec_UP:{vali_metrics['recall_up']:.1f}% | Prec_DN:{vali_metrics['precision_down']:.1f}% Rec_DN:{vali_metrics['recall_down']:.1f}%")
             
-            accelerator.print(f"  Test Loss: {test_loss:.6f} | Test MAE: {test_mae:.6f} | Test Winrate: {test_winrate:.2f}%")
-            if test_trading:
-                accelerator.print(f"  Test P&L: {test_trading['total_return_pct']:+.2f}% | Excess: {test_trading['excess_return_pct']:+.2f}%")
+            accelerator.print(f"  Test | Loss: {test_loss:.6f} | Winrate: {test_metrics['winrate']:.2f}%")
+            accelerator.print(f"       | TP:{test_metrics['tp']} TN:{test_metrics['tn']} FP:{test_metrics['fp']} FN:{test_metrics['fn']}")
+            accelerator.print(f"       | Prec_UP:{test_metrics['precision_up']:.1f}% Rec_UP:{test_metrics['recall_up']:.1f}% | Prec_DN:{test_metrics['precision_down']:.1f}% Rec_DN:{test_metrics['recall_down']:.1f}%")
             
             # Update history
             history['train_loss'].append(float(train_loss_avg))
             history['vali_loss'].append(float(vali_loss))
             history['test_loss'].append(float(test_loss))
-            history['train_mae'].append(float(train_loss_avg))  # Approximate
-            history['vali_mae'].append(float(vali_mae))
-            history['test_mae'].append(float(test_mae))
-            history['vali_winrate'].append(float(vali_winrate))
-            history['test_winrate'].append(float(test_winrate))
-            
-            if vali_trading:
-                history['vali_pnl'].append(float(vali_trading['total_return_pct']))
-                history['vali_excess_return'].append(float(vali_trading['excess_return_pct']))
-            if test_trading:
-                history['test_pnl'].append(float(test_trading['total_return_pct']))
-                history['test_excess_return'].append(float(test_trading['excess_return_pct']))
+            history['vali_winrate'].append(float(vali_metrics['winrate']))
+            history['test_winrate'].append(float(test_metrics['winrate']))
+            history['vali_metrics'].append(vali_metrics)
+            history['test_metrics'].append(test_metrics)
             
             # Track best
             if vali_loss < best_vali_loss:
                 best_vali_loss = vali_loss
-            if vali_winrate > best_vali_winrate:
-                best_vali_winrate = vali_winrate
+            if vali_metrics['winrate'] > best_vali_winrate:
+                best_vali_winrate = vali_metrics['winrate']
                 accelerator.print(f"  >> New best validation winrate: {best_vali_winrate:.2f}%")
             
             # Print patch info for frequency_aware mode
@@ -586,6 +497,10 @@ def main():
             with open(config_file, 'w') as f:
                 json.dump(config_dict, f, indent=2)
             
+            # Get final metrics
+            final_vali = history['vali_metrics'][-1]
+            final_test = history['test_metrics'][-1]
+            
             # Print final summary
             accelerator.print(f"\n{'='*70}")
             accelerator.print(f"TRAINING COMPLETED - FINAL RESULTS")
@@ -593,19 +508,22 @@ def main():
             accelerator.print(f"Loss Type: {loss_type}")
             accelerator.print(f"")
             accelerator.print(f"--- VALIDATION SET ---")
-            accelerator.print(f"  Winrate: {history['vali_winrate'][-1]:.2f}%")
-            accelerator.print(f"  Best Winrate: {best_vali_winrate:.2f}%")
-            if history['vali_pnl']:
-                accelerator.print(f"  P&L: {history['vali_pnl'][-1]:+.2f}%")
-                accelerator.print(f"  Excess Return: {history['vali_excess_return'][-1]:+.2f}%")
-            accelerator.print(f"  Loss: {history['vali_loss'][-1]:.6f}")
+            accelerator.print(f"  Winrate: {final_vali['winrate']:.2f}% (Best: {best_vali_winrate:.2f}%)")
+            accelerator.print(f"  Confusion Matrix:")
+            accelerator.print(f"                  Actual UP    Actual DOWN")
+            accelerator.print(f"    Pred UP         {final_vali['tp']:>5}         {final_vali['fp']:>5}")
+            accelerator.print(f"    Pred DOWN       {final_vali['fn']:>5}         {final_vali['tn']:>5}")
+            accelerator.print(f"  Precision UP: {final_vali['precision_up']:.2f}% | Recall UP: {final_vali['recall_up']:.2f}%")
+            accelerator.print(f"  Precision DOWN: {final_vali['precision_down']:.2f}% | Recall DOWN: {final_vali['recall_down']:.2f}%")
             accelerator.print(f"")
             accelerator.print(f"--- TEST SET ---")
-            accelerator.print(f"  Winrate: {history['test_winrate'][-1]:.2f}%")
-            if history['test_pnl']:
-                accelerator.print(f"  P&L: {history['test_pnl'][-1]:+.2f}%")
-                accelerator.print(f"  Excess Return: {history['test_excess_return'][-1]:+.2f}%")
-            accelerator.print(f"  Loss: {history['test_loss'][-1]:.6f}")
+            accelerator.print(f"  Winrate: {final_test['winrate']:.2f}%")
+            accelerator.print(f"  Confusion Matrix:")
+            accelerator.print(f"                  Actual UP    Actual DOWN")
+            accelerator.print(f"    Pred UP         {final_test['tp']:>5}         {final_test['fp']:>5}")
+            accelerator.print(f"    Pred DOWN       {final_test['fn']:>5}         {final_test['tn']:>5}")
+            accelerator.print(f"  Precision UP: {final_test['precision_up']:.2f}% | Recall UP: {final_test['recall_up']:.2f}%")
+            accelerator.print(f"  Precision DOWN: {final_test['precision_down']:.2f}% | Recall DOWN: {final_test['recall_down']:.2f}%")
             accelerator.print(f"")
             accelerator.print(f"Model saved to: {path}")
             accelerator.print(f"{'='*70}\n")
@@ -615,4 +533,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
