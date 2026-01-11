@@ -31,7 +31,7 @@ import json
 from models import TimeLLM
 from data_provider.data_factory import data_provider
 from utils.tools import EarlyStopping, adjust_learning_rate, load_content
-from utils.losses import DirectionalLoss
+from utils.losses import DirectionalLoss, AsymmetricLoss, WeightedDirectionalLoss
 
 os.environ['CURL_CA_BUNDLE'] = ''
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:64"
@@ -163,13 +163,15 @@ def vali_with_metrics(args, accelerator, model, vali_data, vali_loader, criterio
 def parse_args():
     parser = argparse.ArgumentParser(description='TimeLLM with Directional Loss')
     
-    # ===== Directional Loss Options =====
-    parser.add_argument('--use_directional_loss', type=int, default=0, choices=[0, 1],
-                        help='0: MSE only (baseline), 1: MSE + Directional Loss')
+    # ===== Loss Function Options =====
+    parser.add_argument('--loss_type', type=str, default='mse',
+                        choices=['mse', 'directional', 'asymmetric', 'weighted_directional'],
+                        help='Loss function type')
     parser.add_argument('--direction_weight', type=float, default=0.3,
-                        help='Weight for directional loss component (only used if use_directional_loss=1)')
-    parser.add_argument('--use_soft_direction', type=int, default=1,
-                        help='Use soft (differentiable) directional loss')
+                        help='Weight for directional loss component')
+    # Backward compatibility
+    parser.add_argument('--use_directional_loss', type=int, default=0, choices=[0, 1],
+                        help='(Deprecated) Use --loss_type instead. 0: MSE, 1: Directional')
     
     # ===== Patching Mode =====
     parser.add_argument('--patching_mode', type=str, default='frequency_aware',
@@ -258,8 +260,14 @@ def main():
     except:
         accelerator = Accelerator(kwargs_handlers=[ddp_kwargs])
     
+    # Handle backward compatibility
+    if args.use_directional_loss == 1 and args.loss_type == 'mse':
+        args.loss_type = 'directional'
+    
     # Create experiment name based on settings
-    loss_type = f"DirectionalLoss_w{args.direction_weight}" if args.use_directional_loss else "MSE"
+    loss_type = args.loss_type
+    if args.loss_type != 'mse':
+        loss_type = f"{args.loss_type}_w{args.direction_weight}"
     
     for ii in range(args.itr):
         # Setting string for checkpoint naming
@@ -325,11 +333,14 @@ def main():
             )
         
         # Loss function
-        if args.use_directional_loss:
-            criterion = DirectionalLoss(
-                direction_weight=args.direction_weight,
-                use_soft_direction=bool(args.use_soft_direction)
-            )
+        if args.loss_type == 'mse':
+            criterion = nn.MSELoss()
+        elif args.loss_type == 'directional':
+            criterion = DirectionalLoss(direction_weight=args.direction_weight)
+        elif args.loss_type == 'asymmetric':
+            criterion = AsymmetricLoss(up_penalty=1.5, down_penalty=1.0)
+        elif args.loss_type == 'weighted_directional':
+            criterion = WeightedDirectionalLoss(direction_weight=args.direction_weight)
         else:
             criterion = nn.MSELoss()
         mae_metric = nn.L1Loss()
@@ -387,19 +398,19 @@ def main():
                 outputs = outputs[:, -args.pred_len:, f_dim:]
                 batch_y_target = batch_y[:, -args.pred_len:, f_dim:]
                 
-                # Compute loss
-                if args.use_directional_loss:
-                    prev_values = batch_x[:, -1, f_dim]
-                    loss = criterion(outputs, batch_y_target, prev_values)
-                    
-                    # Track directional accuracy
-                    with torch.no_grad():
-                        pred_dir = (outputs[:, 0, 0] > prev_values).float()
-                        true_dir = (batch_y_target[:, 0, 0] > prev_values).float()
-                        train_correct += (pred_dir == true_dir).sum().item()
-                        train_total += outputs.shape[0]
-                else:
+                # Compute loss (all losses support prev_values)
+                prev_values = batch_x[:, -1, f_dim]
+                if args.loss_type == 'mse':
                     loss = criterion(outputs, batch_y_target)
+                else:
+                    loss = criterion(outputs, batch_y_target, prev_values)
+                
+                # Track directional accuracy for all loss types
+                with torch.no_grad():
+                    pred_dir = (outputs[:, 0, 0] > prev_values).float()
+                    true_dir = (batch_y_target[:, 0, 0] > prev_values).float()
+                    train_correct += (pred_dir == true_dir).sum().item()
+                    train_total += outputs.shape[0]
                 
                 train_loss.append(loss.item())
                 
@@ -420,11 +431,7 @@ def main():
             train_winrate = train_correct / train_total * 100 if train_total > 0 else 0
             
             epoch_duration = time.time() - epoch_time
-            accelerator.print(f"\nEpoch {epoch+1} | Time: {epoch_duration:.2f}s | Train Loss: {train_loss_avg:.6f}", end="")
-            if args.use_directional_loss:
-                accelerator.print(f" | Train Winrate: {train_winrate:.2f}%")
-            else:
-                accelerator.print("")
+            accelerator.print(f"\nEpoch {epoch+1} | Time: {epoch_duration:.2f}s | Train Loss: {train_loss_avg:.6f} | Train Winrate: {train_winrate:.2f}%")
             
             # Validation
             vali_loss, vali_mae, vali_metrics = vali_with_metrics(

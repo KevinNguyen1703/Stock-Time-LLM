@@ -1,5 +1,5 @@
 #!/bin/bash
-# TimeLLM Stock - WITHOUT Directional Loss (Baseline)
+# TimeLLM Stock - MSE Loss (Baseline)
 # Usage: bash scripts/TimeLLM_Stock_Baseline.sh
 
 accelerate launch --num_processes 1 --main_process_port 10099 run_timellm_directional.py \
@@ -30,6 +30,6 @@ accelerate launch --num_processes 1 --main_process_port 10099 run_timellm_direct
   --train_epochs 30 \
   --patience 7 \
   --patching_mode frequency_aware \
-  --use_directional_loss 0 \
+  --loss_type mse \
   --prompt_domain 1 \
-  --model_comment TimeLLM-FFT-Baseline
+  --model_comment TimeLLM-FFT-MSE

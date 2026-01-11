@@ -1,5 +1,5 @@
 #!/bin/bash
-# TimeLLM Stock - WITH Directional Loss
+# TimeLLM Stock - Directional Loss
 # Usage: bash scripts/TimeLLM_Stock_Directional.sh
 
 accelerate launch --num_processes 1 --main_process_port 10100 run_timellm_directional.py \
@@ -30,7 +30,7 @@ accelerate launch --num_processes 1 --main_process_port 10100 run_timellm_direct
   --train_epochs 30 \
   --patience 7 \
   --patching_mode frequency_aware \
-  --use_directional_loss 1 \
+  --loss_type directional \
   --direction_weight 0.3 \
   --prompt_domain 1 \
   --model_comment TimeLLM-FFT-Directional
