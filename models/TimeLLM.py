@@ -348,13 +348,30 @@ class Model(nn.Module):
 
         self.normalize_layers = Normalize(configs.enc_in, affine=False)
 
-    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
+    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None, dynamic_prompts=None):
+        """
+        Forward pass with optional dynamic prompts.
+        
+        Args:
+            x_enc: Input time series (batch, seq_len, features)
+            x_mark_enc: Time encoding for encoder
+            x_dec: Decoder input
+            x_mark_dec: Time encoding for decoder
+            mask: Optional mask
+            dynamic_prompts: List of strings, one prompt per sample in batch (optional)
+        """
         if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
-            dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
+            dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec, dynamic_prompts)
             return dec_out[:, -self.pred_len:, :]
         return None
 
-    def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
+    def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec, dynamic_prompts=None):
+        """
+        Forecasting with optional dynamic prompts.
+        
+        Args:
+            dynamic_prompts: List of prompt strings, one per sample (e.g., expert analysis).
+        """
 
         x_enc = self.normalize_layers(x_enc, 'norm')
 
@@ -369,20 +386,42 @@ class Model(nn.Module):
 
         prompt = []
         for b in range(x_enc.shape[0]):
+            # Get batch index (accounting for feature expansion)
+            batch_idx = b // N
+            
             min_values_str = str(min_values[b].tolist()[0])
             max_values_str = str(max_values[b].tolist()[0])
             median_values_str = str(medians[b].tolist()[0])
             lags_values_str = str(lags[b].tolist())
-            prompt_ = (
-                f"<|start_prompt|>Dataset description: {self.description}"
-                f"Task description: forecast the next {str(self.pred_len)} steps given the previous {str(self.seq_len)} steps information; "
-                "Input statistics: "
-                f"min value {min_values_str}, "
-                f"max value {max_values_str}, "
-                f"median value {median_values_str}, "
-                f"the trend of input is {'upward' if trends[b] > 0 else 'downward'}, "
-                f"top 5 lags are : {lags_values_str}<|<end_prompt>|>"
-            )
+            trend_str = 'upward' if trends[b] > 0 else 'downward'
+            
+            # Build the prompt - with or without dynamic expert advice
+            if dynamic_prompts is not None and batch_idx < len(dynamic_prompts):
+                # Use dynamic prompt (e.g., ChatGPT-generated expert analysis)
+                expert_advice = dynamic_prompts[batch_idx]
+                prompt_ = (
+                    f"<|start_prompt|>"
+                    f"Dataset: {self.description} "
+                    f"Expert Analysis: {expert_advice} "
+                    f"Task: Forecast the next {self.pred_len} {'step' if self.pred_len == 1 else 'steps'} "
+                    f"based on the previous {self.seq_len} steps. "
+                    f"Current statistics - Min: {min_values_str}, Max: {max_values_str}, "
+                    f"Median: {median_values_str}, Trend: {trend_str}, "
+                    f"Key lags: {lags_values_str}"
+                    f"<|end_prompt|>"
+                )
+            else:
+                # Fallback to static prompt
+                prompt_ = (
+                    f"<|start_prompt|>Dataset description: {self.description}"
+                    f"Task description: forecast the next {str(self.pred_len)} steps given the previous {str(self.seq_len)} steps information; "
+                    "Input statistics: "
+                    f"min value {min_values_str}, "
+                    f"max value {max_values_str}, "
+                    f"median value {median_values_str}, "
+                    f"the trend of input is {trend_str}, "
+                    f"top 5 lags are : {lags_values_str}<|<end_prompt>|>"
+                )
 
             prompt.append(prompt_)
 
