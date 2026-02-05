@@ -18,6 +18,7 @@ os.environ['CURL_CA_BUNDLE'] = ''
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:64"
 
 from utils.tools import del_files, EarlyStopping, adjust_learning_rate, vali, load_content
+from utils.losses import DirectionalLoss
 
 parser = argparse.ArgumentParser(description='Time-LLM')
 
@@ -80,6 +81,16 @@ parser.add_argument('--prompt_domain', type=int, default=0, help='')
 parser.add_argument('--llm_model', type=str, default='LLAMA', help='LLM model') # LLAMA, GPT2, BERT
 parser.add_argument('--llm_dim', type=int, default='4096', help='LLM model dimension')# LLama7b:4096; GPT2-small:768; BERT-base:768
 
+# patching mode
+parser.add_argument('--patching_mode', type=str, default='frequency_aware',
+                    choices=['frequency_aware', 'multi_scale', 'single'],
+                    help='Patching mode: frequency_aware (FFT+attention), multi_scale, single')
+
+# directional loss (for stock/financial prediction)
+parser.add_argument('--use_directional_loss', type=int, default=0, choices=[0, 1],
+                    help='0: MSE only (baseline), 1: MSE + Directional Loss')
+parser.add_argument('--direction_weight', type=float, default=0.3,
+                    help='Weight for directional loss component (only used if use_directional_loss=1)')
 
 # optimization
 parser.add_argument('--num_workers', type=int, default=10, help='data loader num workers')
@@ -161,7 +172,12 @@ for ii in range(args.itr):
                                             epochs=args.train_epochs,
                                             max_lr=args.learning_rate)
 
-    criterion = nn.MSELoss()
+    # Loss function selection
+    if args.use_directional_loss:
+        criterion = DirectionalLoss(direction_weight=args.direction_weight, use_soft_direction=True)
+        accelerator.print(f"Using DirectionalLoss with weight={args.direction_weight}")
+    else:
+        criterion = nn.MSELoss()
     mae_metric = nn.L1Loss()
 
     train_loader, vali_loader, test_loader, model, model_optim, scheduler = accelerator.prepare(
@@ -192,6 +208,8 @@ for ii in range(args.itr):
                 accelerator.device)
 
             # encoder - decoder
+            f_dim = -1 if args.features == 'MS' else 0
+            
             if args.use_amp:
                 with torch.cuda.amp.autocast():
                     if args.output_attention:
@@ -199,10 +217,15 @@ for ii in range(args.itr):
                     else:
                         outputs = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
 
-                    f_dim = -1 if args.features == 'MS' else 0
                     outputs = outputs[:, -args.pred_len:, f_dim:]
-                    batch_y = batch_y[:, -args.pred_len:, f_dim:].to(accelerator.device)
-                    loss = criterion(outputs, batch_y)
+                    batch_y_target = batch_y[:, -args.pred_len:, f_dim:].to(accelerator.device)
+                    
+                    # Compute loss (with directional component if enabled)
+                    if args.use_directional_loss:
+                        prev_values = batch_x[:, -1, f_dim]
+                        loss = criterion(outputs, batch_y_target, prev_values)
+                    else:
+                        loss = criterion(outputs, batch_y_target)
                     train_loss.append(loss.item())
             else:
                 if args.output_attention:
@@ -210,10 +233,15 @@ for ii in range(args.itr):
                 else:
                     outputs = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
 
-                f_dim = -1 if args.features == 'MS' else 0
                 outputs = outputs[:, -args.pred_len:, f_dim:]
-                batch_y = batch_y[:, -args.pred_len:, f_dim:]
-                loss = criterion(outputs, batch_y)
+                batch_y_target = batch_y[:, -args.pred_len:, f_dim:]
+                
+                # Compute loss (with directional component if enabled)
+                if args.use_directional_loss:
+                    prev_values = batch_x[:, -1, f_dim]
+                    loss = criterion(outputs, batch_y_target, prev_values)
+                else:
+                    loss = criterion(outputs, batch_y_target)
                 train_loss.append(loss.item())
 
             if (i + 1) % 100 == 0:
