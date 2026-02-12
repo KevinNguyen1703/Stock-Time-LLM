@@ -1,11 +1,16 @@
 """
-Stock Prediction - Directional Loss ONLY
-Evaluates the impact of directional loss in isolation.
+Stock Prediction - Loss Function Comparison
+Evaluates different loss functions using winrate.
+
+Supported Loss Types:
+1. mse          - Pure MSE (baseline)
+2. directional  - MSE + Soft Directional penalty (BCE-like)
+3. asymmetric   - MSE with asymmetric penalties for UP/DOWN errors
+4. weighted_dir - MSE + Direction penalty weighted by move magnitude
 
 Uses:
 - Original TimeLLM model (single patching mode, no FFT+attention)
 - NO dynamic prompts
-- Directional Loss (configurable weight)
 
 Outputs: MSE, MAE, Winrate for train, valid, test
 """
@@ -13,6 +18,7 @@ Outputs: MSE, MAE, Winrate for train, valid, test
 import argparse
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from accelerate import Accelerator
 from accelerate import DistributedDataParallelKwargs
 from torch import optim
@@ -33,16 +39,29 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:64"
 from utils.tools import EarlyStopping, adjust_learning_rate, load_content
 
 
+# ============================================================================
+# LOSS FUNCTIONS
+# ============================================================================
+
+class MSELossWrapper(nn.Module):
+    """Pure MSE Loss (baseline)"""
+    def __init__(self):
+        super().__init__()
+        self.mse = nn.MSELoss()
+    
+    def forward(self, pred, target, prev_values=None):
+        return self.mse(pred, target)
+
+
 class DirectionalLoss(nn.Module):
     """
-    Combined loss: MSE + Soft Directional penalty
-    Set direction_weight=0 for pure MSE (baseline)
+    MSE + Soft Directional penalty (BCE-like)
+    Penalizes wrong direction predictions in a differentiable way.
     """
-    def __init__(self, direction_weight=0.3, use_soft_direction=True):
+    def __init__(self, direction_weight=0.3):
         super().__init__()
         self.mse = nn.MSELoss()
         self.direction_weight = direction_weight
-        self.use_soft_direction = use_soft_direction
     
     def forward(self, pred, target, prev_values=None):
         mse_loss = self.mse(pred, target)
@@ -53,25 +72,107 @@ class DirectionalLoss(nn.Module):
         pred_first = pred[:, 0, 0]
         target_first = target[:, 0, 0]
         
-        if self.use_soft_direction:
-            # Soft directional loss (differentiable BCE-like)
-            scale = 10.0
-            pred_dir_prob = torch.sigmoid(scale * (pred_first - prev_values))
-            target_dir_prob = torch.sigmoid(scale * (target_first - prev_values))
-            
-            eps = 1e-7
-            direction_loss = -torch.mean(
-                target_dir_prob * torch.log(pred_dir_prob + eps) +
-                (1 - target_dir_prob) * torch.log(1 - pred_dir_prob + eps)
-            )
-        else:
-            # Hard directional loss (non-differentiable)
-            pred_direction = torch.sign(pred_first - prev_values)
-            target_direction = torch.sign(target_first - prev_values)
-            direction_mismatch = (pred_direction != target_direction).float()
-            direction_loss = direction_mismatch.mean()
+        # Soft directional loss (differentiable BCE-like)
+        scale = 10.0
+        pred_dir_prob = torch.sigmoid(scale * (pred_first - prev_values))
+        target_dir_prob = torch.sigmoid(scale * (target_first - prev_values))
+        
+        eps = 1e-7
+        direction_loss = -torch.mean(
+            target_dir_prob * torch.log(pred_dir_prob + eps) +
+            (1 - target_dir_prob) * torch.log(1 - pred_dir_prob + eps)
+        )
         
         return mse_loss + self.direction_weight * direction_loss
+
+
+class AsymmetricLoss(nn.Module):
+    """
+    Asymmetric Loss - penalizes missed UP moves more than missed DOWN moves.
+    Useful when missing a rally is more costly than missing a drop.
+    """
+    def __init__(self, up_penalty=1.5, down_penalty=1.0):
+        super().__init__()
+        self.mse = nn.MSELoss(reduction='none')
+        self.up_penalty = up_penalty      # Penalty for missing UP (pred DOWN, actual UP)
+        self.down_penalty = down_penalty  # Penalty for missing DOWN (pred UP, actual DOWN)
+    
+    def forward(self, pred, target, prev_values=None):
+        # Base MSE per sample
+        mse_per_sample = self.mse(pred, target).mean(dim=[1, 2])  # (batch,)
+        
+        if prev_values is None:
+            return mse_per_sample.mean()
+        
+        pred_first = pred[:, 0, 0]
+        target_first = target[:, 0, 0]
+        
+        pred_up = pred_first > prev_values
+        actual_up = target_first > prev_values
+        
+        # Apply asymmetric weights
+        weights = torch.ones_like(mse_per_sample)
+        
+        # Missed UP: predicted DOWN but actual UP
+        missed_up = (~pred_up) & actual_up
+        weights[missed_up] = self.up_penalty
+        
+        # Missed DOWN: predicted UP but actual DOWN
+        missed_down = pred_up & (~actual_up)
+        weights[missed_down] = self.down_penalty
+        
+        return (mse_per_sample * weights).mean()
+
+
+class WeightedDirectionalLoss(nn.Module):
+    """
+    Weighted Directional Loss - direction penalty weighted by move magnitude.
+    Penalizes wrong direction more when the actual move is large.
+    """
+    def __init__(self, direction_weight=0.5, magnitude_scale=10.0):
+        super().__init__()
+        self.mse = nn.MSELoss()
+        self.direction_weight = direction_weight
+        self.magnitude_scale = magnitude_scale
+    
+    def forward(self, pred, target, prev_values=None):
+        mse_loss = self.mse(pred, target)
+        
+        if prev_values is None or self.direction_weight == 0:
+            return mse_loss
+        
+        pred_first = pred[:, 0, 0]
+        target_first = target[:, 0, 0]
+        
+        eps = 1e-8
+        # Calculate returns
+        pred_return = (pred_first - prev_values) / (torch.abs(prev_values) + eps)
+        target_return = (target_first - prev_values) / (torch.abs(prev_values) + eps)
+        
+        # Direction match: +1 if same direction, -1 if opposite
+        direction_match = torch.sign(pred_return) * torch.sign(target_return)
+        
+        # Weight by magnitude of actual move (larger moves = more important)
+        magnitude_weight = torch.abs(target_return) * self.magnitude_scale
+        
+        # Penalty for wrong direction, weighted by magnitude
+        direction_loss = torch.mean(F.relu(-direction_match) * (1 + magnitude_weight))
+        
+        return mse_loss + self.direction_weight * direction_loss
+
+
+def get_loss_function(loss_type, direction_weight=0.3, up_penalty=1.5, down_penalty=1.0):
+    """Factory function to get loss by name"""
+    if loss_type == 'mse':
+        return MSELossWrapper()
+    elif loss_type == 'directional':
+        return DirectionalLoss(direction_weight=direction_weight)
+    elif loss_type == 'asymmetric':
+        return AsymmetricLoss(up_penalty=up_penalty, down_penalty=down_penalty)
+    elif loss_type == 'weighted_dir':
+        return WeightedDirectionalLoss(direction_weight=direction_weight)
+    else:
+        raise ValueError(f"Unknown loss type: {loss_type}")
 
 
 def compute_metrics(pred, target, prev_values):
@@ -133,13 +234,18 @@ def evaluate(args, accelerator, model, data_loader, desc="Eval"):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Time-LLM Stock - Directional Loss Only')
+    parser = argparse.ArgumentParser(description='Time-LLM Stock - Loss Function Comparison')
     
-    # Directional loss config
+    # Loss function config
+    parser.add_argument('--loss_type', type=str, default='mse',
+                        choices=['mse', 'directional', 'asymmetric', 'weighted_dir'],
+                        help='Loss function type: mse, directional, asymmetric, weighted_dir')
     parser.add_argument('--direction_weight', type=float, default=0.3,
-                        help='Weight for directional loss (0 = pure MSE baseline)')
-    parser.add_argument('--use_soft_direction', action='store_true', default=True,
-                        help='Use soft (differentiable) directional loss')
+                        help='Weight for directional component (for directional/weighted_dir)')
+    parser.add_argument('--up_penalty', type=float, default=1.5,
+                        help='Penalty for missing UP moves (for asymmetric loss)')
+    parser.add_argument('--down_penalty', type=float, default=1.0,
+                        help='Penalty for missing DOWN moves (for asymmetric loss)')
     
     # Basic config
     parser.add_argument('--task_name', type=str, default='long_term_forecast')
@@ -211,7 +317,7 @@ def parse_args():
 
 
 def train(args):
-    """Training with directional loss only"""
+    """Training with configurable loss function"""
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -219,20 +325,26 @@ def train(args):
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(kwargs_handlers=[ddp_kwargs])
     
-    loss_type = "MSE" if args.direction_weight == 0 else f"Directional(w={args.direction_weight})"
+    # Loss type description
+    loss_desc = {
+        'mse': 'MSE (baseline)',
+        'directional': f'Directional (w={args.direction_weight})',
+        'asymmetric': f'Asymmetric (up={args.up_penalty}, down={args.down_penalty})',
+        'weighted_dir': f'Weighted Directional (w={args.direction_weight})'
+    }
     
-    setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_dw{}'.format(
+    setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_loss{}'.format(
         args.task_name, args.model_id, args.model, args.data,
         args.features, args.seq_len, args.label_len, args.pred_len,
-        args.d_model, args.direction_weight)
+        args.d_model, args.loss_type)
     
     args.content = load_content(args)
     
     accelerator.print(f"\n{'='*70}")
-    accelerator.print(f"Time-LLM Stock - DIRECTIONAL LOSS EVALUATION")
+    accelerator.print(f"Time-LLM Stock - LOSS FUNCTION COMPARISON")
     accelerator.print(f"{'='*70}")
-    accelerator.print(f"Loss: {loss_type}")
-    accelerator.print(f"Patching: {args.patching_mode} (original, no FFT)")
+    accelerator.print(f"Loss Type: {args.loss_type} -> {loss_desc[args.loss_type]}")
+    accelerator.print(f"Patching: {args.patching_mode}")
     accelerator.print(f"Dynamic Prompts: DISABLED")
     accelerator.print(f"Data: {args.data_path}")
     accelerator.print(f"{'='*70}\n")
@@ -264,10 +376,12 @@ def train(args):
         max_lr=args.learning_rate
     )
     
-    # Directional loss (or pure MSE if direction_weight=0)
-    criterion = DirectionalLoss(
+    # Get loss function by type
+    criterion = get_loss_function(
+        args.loss_type,
         direction_weight=args.direction_weight,
-        use_soft_direction=args.use_soft_direction
+        up_penalty=args.up_penalty,
+        down_penalty=args.down_penalty
     )
     
     train_loader, vali_loader, test_loader, model, model_optim, scheduler = accelerator.prepare(
@@ -369,7 +483,7 @@ def train(args):
     
     accelerator.print(f"\n{'='*70}")
     accelerator.print(f"Training Completed!")
-    accelerator.print(f"Loss Type: {loss_type}")
+    accelerator.print(f"Loss Type: {args.loss_type} -> {loss_desc[args.loss_type]}")
     accelerator.print(f"Best Validation Winrate: {best_winrate:.2f}%")
     accelerator.print(f"Model saved to: {path}")
     accelerator.print(f"{'='*70}")

@@ -3,11 +3,11 @@
 # Use this as baseline to compare with directional loss
 
 echo "============================================"
-echo "BASELINE: MSE Loss Only (No Directional)"
+echo "BASELINE: MSE Loss Only"
 echo "============================================"
 
 accelerate launch --mixed_precision bf16 --num_processes 1 --main_process_port 2028 run_stock_directional_only.py \
-  --direction_weight 0.0 \
+  --loss_type mse \
   --patching_mode single \
   --task_name long_term_forecast \
   --is_training 1 \

@@ -7,8 +7,8 @@ echo "EXPERIMENT: Directional Loss (weight=0.3)"
 echo "============================================"
 
 accelerate launch --mixed_precision bf16 --num_processes 1 --main_process_port 2029 run_stock_directional_only.py \
+  --loss_type directional \
   --direction_weight 0.3 \
-  --use_soft_direction \
   --patching_mode single \
   --task_name long_term_forecast \
   --is_training 1 \
