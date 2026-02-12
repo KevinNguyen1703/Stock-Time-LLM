@@ -1,19 +1,20 @@
 #!/bin/bash
-# TimeLLM Stock with FFT+Attention Patching
-# Usage: bash scripts/TimeLLM_Stock_FFT.sh [patching_mode]
-# patching_mode: frequency_aware (default), multi_scale, single
+# EXPERIMENT: Directional Loss Only
+# Evaluates impact of directional loss component in isolation
 
-patching_mode=${1:-frequency_aware}
+echo "============================================"
+echo "EXPERIMENT: Directional Loss (weight=0.3)"
+echo "============================================"
 
-echo "Running with patching_mode: $patching_mode"
-
-accelerate launch --mixed_precision bf16 --num_processes 1 --main_process_port 2026 run_stock_fft.py \
-  --patching_mode $patching_mode \
+accelerate launch --mixed_precision bf16 --num_processes 1 --main_process_port 2029 run_stock_directional_only.py \
+  --direction_weight 0.3 \
+  --use_soft_direction \
+  --patching_mode single \
   --task_name long_term_forecast \
   --is_training 1 \
   --root_path ./dataset/dataset/stock/ \
   --data_path vcb_stock_indicators.csv \
-  --model_id VCB_stock_60_1 \
+  --model_id VCB_stock_directional \
   --model TimeLLM \
   --data Stock \
   --features MS \
@@ -37,7 +38,5 @@ accelerate launch --mixed_precision bf16 --num_processes 1 --main_process_port 2
   --patch_len 8 \
   --stride 4 \
   --prompt_domain 1 \
-  --model_comment "TimeLLM-$patching_mode"
-
-
+  --model_comment "DirectionalLoss"
 
