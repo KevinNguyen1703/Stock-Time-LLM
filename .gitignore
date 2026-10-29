@@ -7,3 +7,7 @@ logs/
 .vscode/
 .pytest_cache/
 .pytest_cache/
+.venv/
+checkpoints/
+data_raw/
+/data/
