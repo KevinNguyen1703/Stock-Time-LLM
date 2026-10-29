@@ -19,6 +19,9 @@ Active development happens in `stock_llm/` + `data_collection/`; the `run_stock_
 - News alignment (`stock_llm/data/news.py`): an item counts for day t only if published before 09:00 on t; date-only timestamps are treated as end of day.
 - Train/eval: `python -m stock_llm.train --model {lstm,dlinear,patchtst} [--fold 0|1|2] [--min_move x] --seeds 0 1 2`. Folds are rolling-origin test years 2023 / 2024 / 2025-26; test is evaluated once with the val-selected checkpoint. Report winrate with trade count, next to the always-up/always-down floors; never filter test days by realised move size (that is look-ahead).
 - `stock_llm/analysis/` holds the predictability studies (technical features show no signal; LLM news sentiment does).
+- Event-driven pipeline: `python -m stock_llm.text.event_type` -> `stock_llm/data/events.py` (`build_events`, pickled to `data/text/events.pkl` + `events_cols.json`; targets `ret_H`, `exc_H` vs VN-Index, `rel_H` vs the 8-ticker peer average) -> `train_llm.py` (LoRA 7B, overfits) / `frozen_combiner.py` (frozen LLM features + logit/GBM).
+- Thesis model Time-LLM+ (`models/timellm_plus.py`, `train_plus.py`): frozen backbone + C1 news prompt/knowledge tokens, C2 text-conditioned FFT patching, C3 decomposed selective loss; each axis is one flag (`--prompt/--knowledge/--patching/--loss`). Grid: `bash stock_llm/run_ablations.sh [c1|c2|c3|full|all]` (env BACKBONE/FOLDS/SEEDS); table: `python -m stock_llm.analysis.summarize_plus`. Smoke test with `--limit 16 --epochs 1`.
+- Shell is zsh: unquoted `$var` is not word-split; use `${=var}` in loops, and avoid `pgrep -f`/`pkill -f` patterns that also match the calling shell's own command line.
 
 ## Data (legacy pipeline)
 
