@@ -290,8 +290,15 @@ def main():
     tag = (f"{a.backbone}_f{a.fold}_h{a.horizon}_p-{a.prompt}_k{a.knowledge}_{a.patching}_{a.loss}_s{a.seed}"
            + (f"_limit{a.limit}" if a.limit else ""))
     json.dump(res, open(f"{a.out}/{tag}.json", "w"), indent=1)
-    np.savez(f"{a.out}/pred_{tag}.npz", p=pt, conf=ct, rel=s_te.rel, ret=s_te.ret,
-             ticker=s_te.df["ticker"].to_numpy(), date=s_te.df["date"].to_numpy())
+    os.makedirs("checkpoints/plus", exist_ok=True)   # trainable weights only (the LLM is frozen and reloaded by name)
+    torch.save({"args": vars(a), "state": best_state, "scaler": scaler, "sd": sd, "vol_median": vol_median,
+                "trade_thresholds": thr, "conf_threshold": conf_thr, "ltt_threshold": ltt},
+               f"checkpoints/plus/{tag}.pt")
+    side_q = np.where(pt >= thr[1], 1, np.where(pt <= thr[0], -1, 0))
+    sel_conf = ct >= conf_thr if not isinstance(conf_thr, str) else np.zeros(len(pt), bool)
+    sel_ltt = ct >= ltt if isinstance(ltt, float) else np.zeros(len(pt), bool)
+    np.savez(f"{a.out}/pred_{tag}.npz", p=pt, conf=ct, rel=s_te.rel, ret=s_te.ret, side_q=side_q,
+             sel_conf=sel_conf, sel_ltt=sel_ltt, ticker=s_te.df["ticker"].to_numpy(), date=s_te.df["date"].to_numpy())
     print(json.dumps({k: res[k] for k in ("val", "test")}, indent=1))
 
 
