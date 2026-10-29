@@ -87,7 +87,7 @@ def trades(pv, pt, ret, q=0.2):
 def run(target, h, kind):
     df = pd.read_pickle("data/text/events.pkl")
     cols = json.load(open("data/text/events_cols.json"))
-    rows = []
+    rows, pooled = [], {}
     for fold in range(3):
         tr, va, te, _ = split_fold(df, fold, h)
         tr, va, te = [d.dropna(subset=[f"{target}_{h}"]) for d in (tr, va, te)]
@@ -104,9 +104,24 @@ def run(target, h, kind):
         }
         preds = {k: fit_predict(kind, v[0], ytr, v[1:], seed=fold) for k, v in variants.items()}
         for k, (pv, pt) in preds.items():
+            # thresholds come from each fold's own validation set, so trade decisions stay out-of-sample
+            lo, hi = np.quantile(pv, 0.2), np.quantile(pv, 0.8)
+            pooled.setdefault(k, []).append(pd.DataFrame({"y": yte, "p": pt, "ret": ret_te,
+                                                          "side": np.where(pt >= hi, 1, np.where(pt <= lo, -1, 0))}))
+        for k, (pv, pt) in preds.items():
             r = {"fold": fold, "variant": k, "test_auc": roc_auc_score(yte, pt),
                  **boot_auc(yte, pt, preds["ts_only"][1] if k != "ts_only" else None), **trades(pv, pt, ret_te)}
             rows.append(r)
+    # pooled over the three test years (each prediction made by the model trained on earlier data only)
+    P = {k: pd.concat(v, ignore_index=True) for k, v in pooled.items()}
+    for k, d in P.items():
+        t = d["side"] != 0
+        rows.append({"fold": "pooled", "variant": k, "test_auc": roc_auc_score(d["y"], d["p"]),
+                     **boot_auc(d["y"].to_numpy(), d["p"].to_numpy(),
+                                P["ts_only"]["p"].to_numpy() if k != "ts_only" else None),
+                     "n_trades": int(t.sum()), "trade_win": float(np.mean((d["side"][t] > 0) == d["y"][t]) * 100),
+                     "avg_ret_pct": float(np.mean(d["side"][t] * d["ret"][t]) * 100),
+                     "floor": float(max(d["y"].mean(), 1 - d["y"].mean()) * 100)})
     return pd.DataFrame(rows)
 
 
