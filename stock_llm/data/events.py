@@ -2,7 +2,8 @@
 
 A sample is (ticker, day t) where at least one non-routine item tagged to the ticker becomes usable
 before the open of t. Trade: enter at the open of t, exit at the close of t+H-1 (H trading days).
-Labels: raw log return and excess return vs VN-Index over the same window.
+Labels: raw log return (ret), excess return vs VN-Index (exc) and return relative to the equal-weight
+average of the universe tickers over the same window (rel = the company-specific part).
 
 Context given to models (all known before the open of t):
   - time series: daily features for the SEQ_LEN rows up to t-1 (price, foreign flow, VN-Index),
@@ -56,7 +57,7 @@ class EventSet:
     y: dict = field(default_factory=dict)           # name -> list
 
 
-def build_events(horizons=(30, 45)):
+def build_events(horizons=(5, 30, 45)):
     from stock_llm.text.corpus import ALIASES  # noqa: F401  (keeps tagging definitions in one place)
     c = pd.read_parquet("data/text/corpus.parquet")
     ev = pd.read_parquet("data/text/event_qwen25_7b.parquet")
@@ -67,6 +68,14 @@ def build_events(horizons=(30, 45)):
     date_only = items["published"].dt.time == pd.Timestamp("00:00").time()
     items.loc[date_only, "published"] += pd.Timedelta(hours=23, minutes=59)
     idx = load_index()
+    # equal-weight universe: average over tickers of log(close[t+h-1] / open[t]) for every entry day
+    pxs = {t: load_prices(t).set_index("Date") for t in TICKERS}
+    all_days = pxs[TICKERS[0]].index
+    for p_ in pxs.values():
+        all_days = all_days.intersection(p_.index)
+    U_open = pd.DataFrame({t: pxs[t]["Open"].reindex(all_days) for t in TICKERS})
+    U_close = pd.DataFrame({t: pxs[t]["Close"].reindex(all_days) for t in TICKERS})
+    peer = {h: np.log(U_close.shift(-(h - 1)) / U_open).mean(axis=1) for h in horizons}
     rows = []
     for t in TICKERS:
         f, px = ts_frame(t, idx)
@@ -89,9 +98,10 @@ def build_events(horizons=(30, 45)):
                 if e < len(days):
                     r[f"ret_{h}"] = float(np.log(cl.iloc[e] / op.iloc[p]))
                     r[f"exc_{h}"] = r[f"ret_{h}"] - float(np.log(icl.iloc[e] / iop.iloc[p]))
+                    r[f"rel_{h}"] = r[f"ret_{h}"] - float(peer[h].get(days[p], np.nan))
                     r[f"end_{h}"] = days[e]
                 else:
-                    r[f"ret_{h}"] = r[f"exc_{h}"] = np.nan
+                    r[f"ret_{h}"] = r[f"exc_{h}"] = r[f"rel_{h}"] = np.nan
                     r[f"end_{h}"] = pd.NaT
             rows.append(r)
     return pd.DataFrame(rows), list(f.columns)

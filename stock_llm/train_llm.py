@@ -1,7 +1,7 @@
 """Train/evaluate the event-driven text + time-series LLM on one purged rolling-origin fold.
 
 Modes: full | text_only | ts_only | ts_as_text | shuffle_ts | shuffle_text
-Label: up/down of the H-day return (or excess return with --target exc) entered at the open of the event day.
+Label: up/down of the H-day return (--target ret), excess vs VN-Index (exc) or vs the universe peer average (rel), entered at the open of the event day.
 Selective trading: long if p >= the val 1-q quantile, short if p <= the val q quantile (q = --trade_q).
 --overfit N trains and evaluates on the same N training samples (pipeline sanity check, not a result).
 Usage: python -m stock_llm.train_llm --fold 2 --horizon 30 --mode full
@@ -108,7 +108,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fold", type=int, default=2)
     ap.add_argument("--horizon", type=int, default=30)
-    ap.add_argument("--target", default="ret", choices=["ret", "exc"])
+    ap.add_argument("--target", default="ret", choices=["ret", "exc", "rel"])
     ap.add_argument("--mode", default="full",
                     choices=["full", "text_only", "ts_only", "ts_as_text", "shuffle_ts", "shuffle_text"])
     ap.add_argument("--epochs", type=int, default=3)
@@ -127,6 +127,7 @@ def main():
     df = pd.read_pickle("data/text/events.pkl")
     cols = json.load(open("data/text/events_cols.json"))
     tr, va, te, scaler = split_fold(df, a.fold, a.horizon)
+    tr, va, te = [d.dropna(subset=[f"{a.target}_{a.horizon}"]) for d in (tr, va, te)]
     if a.overfit:
         tr = tr.sample(a.overfit, random_state=a.seed)
         va = te = tr
