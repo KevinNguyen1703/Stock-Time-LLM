@@ -9,8 +9,8 @@ Ablation axes (one flag each):
   --loss      mse | hybrid (earlier hybrid loss) | decomp | dro | dro_rank | full (C3: decomposition, Group DRO
               over market regimes, same-week ranking, selective head with Learn-then-Test trade threshold)
 Targets: market part = ret_H - rel_H (peer average), company part = rel_H; direction heads for both the total
-and the company part are anchored on a fixed-sign baseline (news sentiment + 60-day reversal) fitted on
-training data, and the model learns a shrunk correction. Fixed epochs by default (validation is used for
+and the company part are anchored on a theory-signed news-sentiment baseline (sign fixed positive, size
+fitted on training data with a floor), and the model learns a shrunk correction. Fixed epochs by default (validation is used for
 trade thresholds); test is evaluated once.
 Training batches are drawn from week blocks (events of the same calendar week) so the ranking loss compares
 peers facing the same market.
@@ -140,9 +140,9 @@ class Split:
         self.regime = regime_groups(torch.from_numpy(last[:, ci["mkt_ret_20"]]),
                                     torch.from_numpy(last[:, ci["mkt_vol_20"]]), vol_median)
         self.week = pd.to_datetime(df["date"]).dt.to_period("W").astype(str).to_numpy()
-        # anchor features (A): net LLM news sentiment and 60-day reversal; news only when the prompt has news
+        # anchor feature (A): net LLM news sentiment (only when the prompt carries news)
         sent = np.array([sum(it["score"] for it in its) if news else 0 for its in items], float)
-        self.afeat = np.stack([sent, -last[:, ci["ret_60"]]], 1)
+        self.afeat = sent[:, None]
         self.anchor = torch.zeros(len(df), 2)
         self.dates = pd.to_datetime(df["date"]).to_numpy()
         self.df, self.tok = df, model.tok
@@ -170,9 +170,15 @@ class Split:
 
 # ---------------------------------------------------------------- anchor (A)
 class Anchor:
-    """Fixed-sign baseline: logistic regression on [net news sentiment, 60-day reversal], fitted on the
-    training split only, with coefficients clipped at >= 0 (each signal may only push in its known
-    direction). One model per target (total return, company-specific return)."""
+    """Theory-signed baseline on the net LLM news sentiment: positive news -> higher probability of a rise.
+
+    The sign is fixed a priori (not chosen from any test period); the size is fitted on the training split
+    with a floor W_MIN > 0, so a training period where the relation ran the other way cannot silently turn
+    the anchor into a constant. Price-based signals (e.g. 60-day reversal vs momentum) are not used: their
+    sign has no a-priori justification at this horizon and flipped between our training and test years.
+    One model per target (total return, company-specific return)."""
+    W_MIN = 0.1
+
     def fit(self, s):
         from sklearn.linear_model import LogisticRegression
         self.mu, self.sd = s.afeat.mean(0), s.afeat.std(0) + 1e-8
@@ -180,7 +186,7 @@ class Anchor:
         self.w = []
         for y in (s.ret > 0, s.rel > 0):
             m = LogisticRegression(C=1.0).fit(z, y)
-            self.w.append((np.clip(m.coef_[0], 0, None), float(m.intercept_[0])))
+            self.w.append((np.maximum(m.coef_[0], self.W_MIN), float(m.intercept_[0])))
         return self
 
     def apply(self, s):
@@ -298,7 +304,7 @@ def main():
     anchor = Anchor().fit(s_tr)
     for s_ in (s_tr, s_va, s_te):
         anchor.apply(s_)
-    print("anchor coefficients [sentiment, reversal] (total, company):",
+    print("anchor sentiment weight (total, company):",
           [w.round(3).tolist() for w, _ in anchor.w], flush=True)
     print("train regime counts (down/lowvol, down/highvol, up/lowvol, up/highvol):",
           np.bincount(s_tr.regime.numpy(), minlength=4).tolist(), flush=True)
