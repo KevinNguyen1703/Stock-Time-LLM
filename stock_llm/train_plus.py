@@ -27,7 +27,8 @@ import torch
 from sklearn.metrics import roc_auc_score
 
 from stock_llm.data.events import SEQ_LEN, split_fold
-from stock_llm.models.timellm_plus import (BANK_MODES, EVENTS, KN_TOKEN, LOSSES, MAX_ITEMS, SOURCES, TS_TOKEN,
+from stock_llm.models.timellm_plus import (BANK_MODES, EVENTS, KN_TOKEN, LOSSES, MAX_ITEMS, SEL_LOSSES, SOURCES,
+                                           TS_TOKEN,
                                            GroupDRO, TimeLLMPlus, compute_loss, ltt_threshold, regime_groups)
 
 EVENT_EN = {"earnings": "earnings", "guidance": "plan/AGM", "capital": "capital/dividend", "ownership": "ownership",
@@ -218,6 +219,9 @@ class Anchor:
 # ---------------------------------------------------------------- eval
 def scores(out, loss_mode):
     """Return (total-direction score, company-direction score), centred at 0."""
+    if loss_mode in SEL_LOSSES:
+        t = torch.sigmoid(out["dir_total"]) - 0.5
+        return t, t
     if loss_mode == "full":
         return torch.sigmoid(out["dir_total"]) - 0.5, torch.sigmoid(out["dir_company"]) - 0.5
     if loss_mode in ("decomp", "dro", "dro_rank"):
@@ -231,8 +235,8 @@ def predict(model, s, a, device, bs):
     model.eval()
     pt_, pc_, conf, w = [], [], [], []
     for i in range(0, len(s), bs):
-        ids, am, ts, kn, _, anc, _ = s.batch(list(range(i, min(i + bs, len(s)))), device)
-        out = model(ids, am, ts, kn, anc)
+        ids, am, ts, kn, y_, anc, _ = s.batch(list(range(i, min(i + bs, len(s)))), device)
+        out = model(ids, am, ts, kn, anc, regime=y_["regime"])
         p_tot, p_comp = scores(out, a.loss)
         pt_.append(p_tot.float().cpu()); pc_.append(p_comp.float().cpu())
         conf.append(torch.sigmoid(out["conf"]).float().cpu())
@@ -322,6 +326,7 @@ def main():
         tr, va, te = [d.sample(min(a.limit, len(d)), random_state=a.seed) for d in (tr, va, te)]
     sd = ((tr[f"ret_{a.horizon}"] - tr[f"rel_{a.horizon}"]).std(), tr[f"rel_{a.horizon}"].std())
     model = TimeLLMPlus(a.backbone, len(cols), SEQ_LEN, ci["ret_1"], a.patching, bool(a.knowledge)).to(device)
+    model.use_regime_conf = a.loss == "sel_regime"
     params = model.trainable_parameters()
     print(f"trainable params: {sum(p.numel() for p in params):,} (LLM frozen)", flush=True)
     vol_median = float(np.median([t[-1][ci["mkt_vol_20"]] for t in tr["ts"]]))
@@ -349,7 +354,7 @@ def main():
         t0, losses = time.time(), []
         for idx in s_tr.week_batches(a.bs, rng):
             ids, am, ts, kn, y, anc, fut = s_tr.batch(idx, device)
-            out = {k: v.float() for k, v in model(ids, am, ts, kn, anc, fut).items()}
+            out = {k: v.float() for k, v in model(ids, am, ts, kn, anc, fut, regime=y["regime"]).items()}
             loss = compute_loss(out, y, a.loss, a.coverage, dro, primary=a.primary, shrink=a.shrink)
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(params, 1.0); opt.step(); sched.step()
@@ -366,7 +371,7 @@ def main():
     pv = pv_tot if a.primary == "total" else pv_comp
     pt = pt_tot if a.primary == "total" else pt_comp
     thr = (np.quantile(pv, a.trade_q), np.quantile(pv, 1 - a.trade_q))
-    if a.loss == "full":
+    if a.loss == "full" or a.loss in SEL_LOSSES:
         conf_thr = float(np.quantile(cv, 1 - a.coverage))
         ltt = ltt_threshold(cv, (pv > 0) == y_va, a.ltt_alpha, a.ltt_delta,
                             weights=recency_weights(s_va.dates, a.ltt_half_life))

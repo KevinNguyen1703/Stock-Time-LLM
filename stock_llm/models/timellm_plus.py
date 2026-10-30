@@ -30,6 +30,7 @@ TS_TOKEN, KN_TOKEN = "<|ts|>", "<|kn|>"
 EVENTS = list(EVENT_VI)
 SOURCES = ["filing", "press", "market_stock", "market_bank", "market_macro"]
 MAX_ITEMS, MAX_AGE = 8, 5
+N_REGIMES = 4
 N_KSTATS = 3   # explicit news statistics for the hypernetwork: net sentiment, mean sentiment, item count
 BRANCHES = {"fixed": [8], "fft": [4, 8, 16], "fft_attn": [4, 8, 16], "fft_text": [4, 8, 16]}
 BANK_MODES = ("bank", "bank_text", "bank_text_aligned")   # C2: static bank / + hypernetwork / + period-aligned
@@ -258,6 +259,9 @@ class TimeLLMPlus(nn.Module):
         self.trunk = nn.Sequential(nn.LayerNorm(d_llm), nn.Dropout(0.1), nn.Linear(d_llm, 256), nn.GELU())
         # [market, company, total-direction correction, company-direction correction, confidence]
         self.heads = nn.Linear(256, 5)
+        # C3 redesign: confidence head that also sees the market regime (used by loss "sel_regime")
+        self.conf_regime = nn.Sequential(nn.Linear(256 + N_REGIMES, 64), nn.GELU(), nn.Linear(64, 1))
+        self.use_regime_conf = False
         with torch.no_grad():   # corrections start at exactly 0, so the model starts at the anchor
             self.heads.weight[2:4].zero_(); self.heads.bias[2:4].zero_()
 
@@ -277,7 +281,7 @@ class TimeLLMPlus(nn.Module):
         net = (sc * mask).sum(1)
         return torch.stack([net / 4, net / n.clamp(min=1) / 2, n / MAX_ITEMS], 1)
 
-    def forward(self, input_ids, attention_mask, ts, kn, anchor, future=None):
+    def forward(self, input_ids, attention_mask, ts, kn, anchor, future=None, regime=None):
         """anchor: [B, 2] fixed-sign baseline logits (total, company) fitted on training data only."""
         # Only the frozen LLM runs in bf16. All trainable modules run in fp32: under bf16 autocast the heads'
         # outputs keep ~3 significant digits and per-event score differences were rounded to a single value.
@@ -298,15 +302,20 @@ class TimeLLMPlus(nn.Module):
         h = out.hidden_states[-1]
         last = attention_mask.sum(1) - 1
         with torch.autocast("cuda", enabled=False):
-            o = self.heads(self.trunk(h[torch.arange(h.shape[0]), last].float()))
+            z = self.trunk(h[torch.arange(h.shape[0]), last].float())
+            o = self.heads(z)
+            if self.use_regime_conf and regime is not None:
+                onehot = nn.functional.one_hot(regime, N_REGIMES).float()
+                o = torch.cat([o[:, :4], self.conf_regime(torch.cat([z, onehot], 1))], 1)
         aux = getattr(self.spec, "aux", None)
         return {"market": o[:, 0], "company": o[:, 1], "corr_total": o[:, 2], "corr_company": o[:, 3],
                 "dir_total": anchor[:, 0] + o[:, 2], "dir_company": anchor[:, 1] + o[:, 3], "conf": o[:, 4],
                 "aux": aux if isinstance(aux, torch.Tensor) and aux.requires_grad else torch.zeros((), device=o.device)}
 
 
-LOSSES = ("mse", "hybrid", "decomp", "dro", "dro_rank", "full")
-N_REGIMES = 4
+LOSSES = ("mse", "hybrid", "decomp", "dro", "dro_rank", "full",
+          "sel", "hybrid_sel", "sel_profit", "sel_regime")      # last four: C3 redesign (selection-focused)
+SEL_LOSSES = ("sel", "hybrid_sel", "sel_profit", "sel_regime")
 
 
 def regime_groups(mkt_ret_20, mkt_vol_20, vol_median):
@@ -340,10 +349,15 @@ def rank_loss(score, y):
     return nn.functional.softplus(-(score[:, None] - score[None, :]))[mask].mean()
 
 
-def selective_loss(dir_logit, conf_logit, y, coverage, lam=8.0):
-    """SelectiveNet-style: confidence-weighted BCE on the trades taken, plus a coverage penalty."""
+def selective_loss(dir_logit, conf_logit, y, coverage, lam=8.0, weight=None):
+    """SelectiveNet-style: confidence-weighted BCE on the trades taken, plus a coverage penalty.
+    weight (optional, profit-aware selection): per-event importance, e.g. the size of the move."""
     c = torch.sigmoid(conf_logit)
     bce = nn.functional.binary_cross_entropy_with_logits(dir_logit, y, reduction="none")
+    if weight is not None:
+        c_w = c * weight
+        risk = (c_w * bce).sum() / c_w.sum().clamp(min=1e-6)
+        return risk + lam * torch.relu(coverage - c.mean()) ** 2
     risk = (c * bce).sum() / c.sum().clamp(min=1e-6)
     return risk + lam * torch.relu(coverage - c.mean()) ** 2
 
@@ -356,6 +370,18 @@ def compute_loss(out, batch, loss_mode, coverage, dro=None, rank_weight=0.5, dir
     aux = aux_weight * out["aux"]
     if loss_mode == "mse":
         return nn.functional.mse_loss(total_pred, total_true) + aux
+    if loss_mode in SEL_LOSSES:        # C3 redesign: plain return objective + learned trade selection
+        up = (total_true > 0).float()
+        bce = nn.functional.binary_cross_entropy_with_logits
+        if loss_mode == "hybrid_sel":
+            base = nn.functional.mse_loss(total_pred, total_true) + dir_weight * bce(3 * total_pred, up)
+        else:
+            base = nn.functional.mse_loss(total_pred, total_true)
+        base = base + dir_weight * bce(out["dir_total"], up) + shrink * (out["corr_total"] ** 2).mean()
+        w = None
+        if loss_mode in ("sel_profit", "sel_regime"):   # profit-aware: big moves matter more
+            w = total_true.abs() / total_true.abs().mean().clamp(min=1e-6)
+        return base + selective_loss(out["dir_total"], out["conf"], up, coverage, weight=w) + aux
     if loss_mode == "hybrid":          # the earlier hybrid loss: MSE + soft directional BCE on the total
         up = (total_true > 0).float()
         return nn.functional.mse_loss(total_pred, total_true) + dir_weight * \
