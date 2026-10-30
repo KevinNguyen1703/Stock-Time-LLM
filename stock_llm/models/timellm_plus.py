@@ -262,6 +262,10 @@ class TimeLLMPlus(nn.Module):
         # C3 redesign: confidence head that also sees the market regime (used by loss "sel_regime")
         self.conf_regime = nn.Sequential(nn.Linear(256 + N_REGIMES, 64), nn.GELU(), nn.Linear(64, 1))
         self.use_regime_conf = False
+        # evidence-aware selection (loss "sel_evidence"): the confidence head also sees the news-anchor
+        # value and strength, so it can learn when the model should act on (or overrule) the news signal
+        self.conf_evidence = nn.Sequential(nn.Linear(256 + 2, 64), nn.GELU(), nn.Linear(64, 1))
+        self.use_evidence_conf = False
         with torch.no_grad():   # corrections start at exactly 0, so the model starts at the anchor
             self.heads.weight[2:4].zero_(); self.heads.bias[2:4].zero_()
 
@@ -304,7 +308,10 @@ class TimeLLMPlus(nn.Module):
         with torch.autocast("cuda", enabled=False):
             z = self.trunk(h[torch.arange(h.shape[0]), last].float())
             o = self.heads(z)
-            if self.use_regime_conf and regime is not None:
+            if self.use_evidence_conf:
+                ev_in = torch.stack([anchor[:, 0], anchor[:, 0].abs()], 1)
+                o = torch.cat([o[:, :4], self.conf_evidence(torch.cat([z, ev_in], 1))], 1)
+            elif self.use_regime_conf and regime is not None:
                 onehot = nn.functional.one_hot(regime, N_REGIMES).float()
                 o = torch.cat([o[:, :4], self.conf_regime(torch.cat([z, onehot], 1))], 1)
         aux = getattr(self.spec, "aux", None)
@@ -314,9 +321,9 @@ class TimeLLMPlus(nn.Module):
 
 
 LOSSES = ("mse", "hybrid", "decomp", "dro", "dro_rank", "full",
-          "sel", "hybrid_sel", "sel_profit", "sel_regime",      # C3 redesign (selection-focused)
+          "sel", "hybrid_sel", "sel_profit", "sel_regime", "sel_evidence",   # C3 redesign (selection-focused)
           "dir")                                                 # reference: anchored direction head, no selection
-SEL_LOSSES = ("sel", "hybrid_sel", "sel_profit", "sel_regime", "dir")
+SEL_LOSSES = ("sel", "hybrid_sel", "sel_profit", "sel_regime", "sel_evidence", "dir")
 
 
 def regime_groups(mkt_ret_20, mkt_vol_20, vol_median):
@@ -380,7 +387,7 @@ def compute_loss(out, batch, loss_mode, coverage, dro=None, rank_weight=0.5, dir
             base = nn.functional.mse_loss(total_pred, total_true)
         base = base + dir_weight * bce(out["dir_total"], up) + shrink * (out["corr_total"] ** 2).mean()
         w = None
-        if loss_mode in ("sel_profit", "sel_regime"):   # profit-aware: big moves matter more
+        if loss_mode in ("sel_profit", "sel_regime", "sel_evidence"):   # profit-aware: big moves matter more
             w = total_true.abs() / total_true.abs().mean().clamp(min=1e-6)
         if loss_mode == "dir":
             return base + aux

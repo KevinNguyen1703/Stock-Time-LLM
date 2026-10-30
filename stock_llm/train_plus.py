@@ -327,6 +327,7 @@ def main():
     sd = ((tr[f"ret_{a.horizon}"] - tr[f"rel_{a.horizon}"]).std(), tr[f"rel_{a.horizon}"].std())
     model = TimeLLMPlus(a.backbone, len(cols), SEQ_LEN, ci["ret_1"], a.patching, bool(a.knowledge)).to(device)
     model.use_regime_conf = a.loss == "sel_regime"
+    model.use_evidence_conf = a.loss == "sel_evidence"
     params = model.trainable_parameters()
     print(f"trainable params: {sum(p.numel() for p in params):,} (LLM frozen)", flush=True)
     vol_median = float(np.median([t[-1][ci["mkt_vol_20"]] for t in tr["ts"]]))
