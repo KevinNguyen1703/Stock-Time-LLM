@@ -31,16 +31,35 @@ def job_args(cfg, q, seed):
     return [str(x) for x in a]
 
 
+def reachable():
+    return subprocess.run(["ssh", "-o", "ConnectTimeout=10", "-o", "BatchMode=yes", "gpu2", "true"],
+                          capture_output=True).returncode == 0
+
+
 def worker(name, jobs, lock, cfg, remote):
+    synced = False
     while True:
+        if remote:   # gpu2 may be offline: only take a job while it is reachable
+            if not reachable():
+                with lock:
+                    if not jobs:
+                        return
+                time.sleep(120)
+                continue
+            if not synced:
+                synced = subprocess.run(["bash", "stock_llm/remote.sh", "sync"]).returncode == 0
         with lock:
             if not jobs:
                 return
             q, seed = jobs.pop(0)
         args, log, t0 = job_args(cfg, q, seed), f"logs/walkforward/s{seed}_q{q}.log", time.time()
         if remote:
-            subprocess.run(["ssh", "gpu2", "cd Gumiho/Stock-Time-LLM && mkdir -p logs/walkforward && "
+            r = subprocess.run(["ssh", "gpu2", "cd Gumiho/Stock-Time-LLM && mkdir -p logs/walkforward && "
                             f".venv/bin/python -m stock_llm.train_plus {' '.join(args)} > {log} 2>&1"])
+            if r.returncode != 0:          # connection lost mid-run: give the job back
+                with lock:
+                    jobs.append((q, seed))
+                continue
             subprocess.run(["rsync", "-az", f"gpu2:Gumiho/Stock-Time-LLM/{OUT}/", f"{OUT}/"])
             subprocess.run(["rsync", "-az", f"gpu2:Gumiho/Stock-Time-LLM/{log}", log])
         else:
@@ -76,8 +95,6 @@ def main():
         os.makedirs(f"{OUT}/s{s}", exist_ok=True)
     jobs = [(q, s) for s in a.seeds for q in range(len(QUARTERS))
             if not glob.glob(f"{OUT}/s{s}/pred_*_wf{QUARTERS[q][0][:7]}.npz")]   # resumable
-    if a.use_gpu2:
-        subprocess.run(["bash", "stock_llm/remote.sh", "sync"], check=True)
     lock = threading.Lock()
     ws = [threading.Thread(target=worker, args=("local", jobs, lock, cfg, False))]
     if a.use_gpu2:
