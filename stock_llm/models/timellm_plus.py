@@ -124,7 +124,8 @@ class AdaptiveSpectral(nn.Module):
         super().__init__()
         self.mode, self.T, self.K = mode, seq_len, len(BANK_PERIODS)
         f0 = torch.tensor([1.0 / p for p in BANK_PERIODS])
-        self.mu_raw = nn.Parameter(torch.logit(f0 / 0.5))                  # mu = 0.5 * sigmoid(.)  (cycles/day)
+        self.f_lo = 1.0 / seq_len                                          # mu in (1/T, 0.5) cycles/day, smoothly
+        self.mu_raw = nn.Parameter(torch.logit((f0 - self.f_lo) / (0.5 - self.f_lo)))
         self.sig_raw = nn.Parameter(torch.log(torch.expm1(f0 * 0.5)))      # sigma = softplus(.)
         if mode in ("bank_text", "bank_text_aligned"):
             self.hyper = nn.Sequential(nn.Linear(d + n_feat, d), nn.GELU(), nn.Linear(d, 2 * self.K))
@@ -137,15 +138,18 @@ class AdaptiveSpectral(nn.Module):
         self.last_periods, self.aux = None, torch.tensor(0.0)
 
     def base_params(self):
-        return 0.5 * torch.sigmoid(self.mu_raw), nn.functional.softplus(self.sig_raw) + 1e-3
+        mu = self.f_lo + (0.5 - self.f_lo) * torch.sigmoid(self.mu_raw)
+        return mu, nn.functional.softplus(self.sig_raw) + 1e-3
 
     def band_params(self, x, k_sum):
         mu, sig = self.base_params()
         mu, sig = mu.expand(x.shape[0], -1), sig.expand(x.shape[0], -1)
         if hasattr(self, "hyper"):
             delta = 0.5 * torch.tanh(self.hyper(torch.cat([k_sum, x[:, -1]], -1)))
-            mu, sig = mu * torch.exp(delta[:, :self.K]), sig * torch.exp(delta[:, self.K:])
-        return mu.clamp(1.0 / self.T, 0.5), sig
+            # shift in logit space so the centre stays inside (1/T, 0.5) without a gradient-killing clamp
+            z = torch.logit((mu - self.f_lo) / (0.5 - self.f_lo)) + delta[:, :self.K]
+            mu, sig = self.f_lo + (0.5 - self.f_lo) * torch.sigmoid(z), sig * torch.exp(delta[:, self.K:])
+        return mu, sig
 
     def diversity(self):
         """Mean pairwise cosine overlap of the (global) band filters on a fine frequency grid."""
@@ -225,20 +229,25 @@ class TimeLLMPlus(nn.Module):
         return [p for n, p in self.named_parameters() if p.requires_grad and not n.startswith("llm.")]
 
     def forward(self, input_ids, attention_mask, ts, kn):
+        # Only the frozen LLM runs in bf16. All trainable modules run in fp32: under bf16 autocast the heads'
+        # outputs keep ~3 significant digits and per-event score differences were rounded to a single value.
         placeholder = (input_ids == self.ts_id) | (input_ids == self.kn_id)
         emb = self.llm.get_input_embeddings()(torch.where(placeholder, 0, input_ids))
-        k_items, k_sum = self.know(*kn)
-        soft = self.reprog(torch.cat(self.spec(ts, k_sum), 1)).to(emb.dtype)        # [B, n_ts, d_llm]
+        with torch.autocast("cuda", enabled=False):
+            k_items, k_sum = self.know(*kn)
+            soft = self.reprog(torch.cat(self.spec(ts.float(), k_sum), 1))        # [B, n_ts, d_llm]
+            kt = self.kn_proj(k_items) if self.use_knowledge else None
         m = input_ids == self.ts_id
-        emb = emb.masked_scatter(m.unsqueeze(-1), soft.reshape(-1, soft.shape[-1]))
+        emb = emb.masked_scatter(m.unsqueeze(-1), soft.to(emb.dtype).reshape(-1, soft.shape[-1]))
         if self.use_knowledge:
             km = input_ids == self.kn_id
-            kt = self.kn_proj(k_items).to(emb.dtype)
-            emb = emb.masked_scatter(km.unsqueeze(-1), kt.reshape(-1, kt.shape[-1]))
-        out = self.llm(inputs_embeds=emb, attention_mask=attention_mask, output_hidden_states=True)
+            emb = emb.masked_scatter(km.unsqueeze(-1), kt.to(emb.dtype).reshape(-1, kt.shape[-1]))
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            out = self.llm(inputs_embeds=emb, attention_mask=attention_mask, output_hidden_states=True)
         h = out.hidden_states[-1]
         last = attention_mask.sum(1) - 1
-        o = self.heads(self.trunk(h[torch.arange(h.shape[0]), last].float()))
+        with torch.autocast("cuda", enabled=False):
+            o = self.heads(self.trunk(h[torch.arange(h.shape[0]), last].float()))
         aux = getattr(self.spec, "aux", None)
         return {"market": o[:, 0], "company": o[:, 1], "dir": o[:, 2], "conf": o[:, 3],
                 "aux": aux if isinstance(aux, torch.Tensor) and aux.requires_grad else torch.zeros((), device=o.device)}
