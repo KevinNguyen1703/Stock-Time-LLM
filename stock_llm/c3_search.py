@@ -2,8 +2,10 @@
 
 Base (fixed): C1 news prompt + knowledge tokens, C2 filter bank + news hypernetwork (patching=bank_text).
 Success (per dev year 2023 and 2024): at equal coverage (top --coverage of test events, chosen from scores
-only, no labels), the variant's confidence-selected trades beat the MSE baseline's most-extreme-score
-trades on BOTH winrate and average return, and the variant's AUC is within 0.01 of the baseline's.
+only, no labels), the variant's confidence-selected trades beat, on BOTH winrate and average return, each
+reference's most-extreme-score trades: "mse" (plain regression), "dir" (the same anchored direction head
+without the selective head; isolates C3) and "anchor" (news sentiment alone); and the variant's AUC is
+within 0.01 of the better reference model.
 Usage: python -m stock_llm.c3_search --variants sel hybrid_sel sel_profit sel_regime [--folds 0 1]
 """
 import argparse
@@ -23,7 +25,7 @@ YEARS = {0: "2023", 1: "2024", 2: "2025-26"}
 
 def jobs(variants, folds, coverage, extra):
     out = []
-    for v in ["mse", *variants]:
+    for v in ["mse", "dir", *variants]:
         for f in folds:
             name = f"c3_{v}{extra.replace(' ', '').replace('--', '_')}_f{f}"
             out.append((name, ["--fold", str(f), "--loss", v, "--coverage", str(coverage),
@@ -33,7 +35,7 @@ def jobs(variants, folds, coverage, extra):
 
 
 def selection(z, coverage, by):
-    p = z["p_total"]
+    p = z["anchor"][:, 0] if by == "anchor" else z["p_total"]
     score = z["conf"] if by == "conf" else np.abs(p - np.median(p))
     sel = score >= np.quantile(score, 1 - coverage)
     side, r = np.sign(p[sel] - (0 if by == "conf" else np.median(p))), z["ret"][sel]
@@ -48,13 +50,17 @@ def evaluate(variants, folds, coverage, extra):
     for v in variants:
         ok, rows = True, []
         for f in folds:
-            b, s = selection(load("mse", f), coverage, "abs"), selection(load(v, f), coverage, "conf")
-            good = s["win"] > b["win"] and s["avg"] > b["avg"] and s["auc"] >= b["auc"] - 0.01
+            s = selection(load(v, f), coverage, "conf")
+            refs = {"mse": selection(load("mse", f), coverage, "abs"),
+                    "dir": selection(load("dir", f), coverage, "abs"),        # same model, no selective head
+                    "anchor": selection(load("dir", f), coverage, "anchor")}  # news sentiment only, no learning
+            good = all(s["win"] > b["win"] and s["avg"] > b["avg"] for b in refs.values()) and \
+                s["auc"] >= max(refs["mse"]["auc"], refs["dir"]["auc"]) - 0.01
             ok &= good
-            rows.append({"year": YEARS[f], "variant": s, "mse_baseline": b, "better": good})
-            print(f"{v:12s} {YEARS[f]}: sel win {s['win']:.1f} avg {s['avg']:+.2f}% auc {s['auc']:.3f} | "
-                  f"mse win {b['win']:.1f} avg {b['avg']:+.2f}% auc {b['auc']:.3f} | n {s['n']} "
-                  + ("BETTER" if good else ""), flush=True)
+            rows.append({"year": YEARS[f], "variant": s, **refs, "better": good})
+            print(f"{v:12s} {YEARS[f]}: SEL win {s['win']:.1f} avg {s['avg']:+.2f}% auc {s['auc']:.3f} | "
+                  + " | ".join(f"{k} win {b['win']:.1f} avg {b['avg']:+.2f}% auc {b['auc']:.3f}" for k, b in refs.items())
+                  + f" | n {s['n']} " + ("BETTER" if good else ""), flush=True)
         report[v] = {"pass": bool(ok), "rows": rows}
         print(f"{v}: {'PASS' if ok else 'fail'}", flush=True)
     return report

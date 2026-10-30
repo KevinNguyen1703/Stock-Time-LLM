@@ -314,8 +314,9 @@ class TimeLLMPlus(nn.Module):
 
 
 LOSSES = ("mse", "hybrid", "decomp", "dro", "dro_rank", "full",
-          "sel", "hybrid_sel", "sel_profit", "sel_regime")      # last four: C3 redesign (selection-focused)
-SEL_LOSSES = ("sel", "hybrid_sel", "sel_profit", "sel_regime")
+          "sel", "hybrid_sel", "sel_profit", "sel_regime",      # C3 redesign (selection-focused)
+          "dir")                                                 # reference: anchored direction head, no selection
+SEL_LOSSES = ("sel", "hybrid_sel", "sel_profit", "sel_regime", "dir")
 
 
 def regime_groups(mkt_ret_20, mkt_vol_20, vol_median):
@@ -381,6 +382,8 @@ def compute_loss(out, batch, loss_mode, coverage, dro=None, rank_weight=0.5, dir
         w = None
         if loss_mode in ("sel_profit", "sel_regime"):   # profit-aware: big moves matter more
             w = total_true.abs() / total_true.abs().mean().clamp(min=1e-6)
+        if loss_mode == "dir":
+            return base + aux
         return base + selective_loss(out["dir_total"], out["conf"], up, coverage, weight=w) + aux
     if loss_mode == "hybrid":          # the earlier hybrid loss: MSE + soft directional BCE on the total
         up = (total_true > 0).float()
