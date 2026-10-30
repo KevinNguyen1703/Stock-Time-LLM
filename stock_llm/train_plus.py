@@ -283,6 +283,7 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--limit", type=int, default=0, help="smoke test: use only this many samples per split")
     ap.add_argument("--out", default="reports/plus")
+    ap.add_argument("--tag_suffix", default="", help="appended to result/checkpoint names (used by the search)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     torch.manual_seed(a.seed); np.random.seed(a.seed)
@@ -358,7 +359,8 @@ def main():
         k = "band_periods_by_event" if a.patching in BANK_MODES else "band_weights_by_event"
         res[k] = {e: wt[np.array(s_te.events) == e].mean(0).round(3).tolist() for e in sorted(set(s_te.events))}
     tag = (f"{a.backbone}_f{a.fold}_h{a.horizon}_p-{a.prompt}_k{a.knowledge}_{a.patching}_{a.loss}_s{a.seed}"
-           + (f"_shrink{a.shrink:g}" if a.shrink != 1.0 else "") + (f"_limit{a.limit}" if a.limit else ""))
+           + (f"_shrink{a.shrink:g}" if a.shrink != 1.0 else "") + (f"_limit{a.limit}" if a.limit else "")
+           + a.tag_suffix)
     json.dump(res, open(f"{a.out}/{tag}.json", "w"), indent=1)
     os.makedirs("checkpoints/plus", exist_ok=True)   # trainable weights only (the LLM is frozen and reloaded by name)
     torch.save({"args": vars(a), "state": best_state, "scaler": scaler, "sd": sd, "vol_median": vol_median,
