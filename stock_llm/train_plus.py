@@ -8,8 +8,10 @@ Ablation axes (one flag each):
               bank_text_aligned (C2 KASD: learnable filter bank, + news/regime hypernetwork, + period-aligned patches)
   --loss      mse | hybrid (earlier hybrid loss) | decomp | dro | dro_rank | full (C3: decomposition, Group DRO
               over market regimes, same-week ranking, selective head with Learn-then-Test trade threshold)
-Targets: market part = ret_H - rel_H (peer average), company part = rel_H. Test is evaluated once with
-the checkpoint chosen by validation AUC; trade thresholds come from validation.
+Targets: market part = ret_H - rel_H (peer average), company part = rel_H; direction heads for both the total
+and the company part are anchored on a fixed-sign baseline (news sentiment + 60-day reversal) fitted on
+training data, and the model learns a shrunk correction. Fixed epochs by default (validation is used for
+trade thresholds); test is evaluated once.
 Training batches are drawn from week blocks (events of the same calendar week) so the ranking loss compares
 peers facing the same market.
 Usage: python -m stock_llm.train_plus --fold 2 --horizon 30 --prompt news --knowledge 1 --patching bank_text_aligned --loss full
@@ -42,11 +44,16 @@ def window_stats(ts, ci):
     return path, lags
 
 
-def static_prompt(row, h, ci):
+def task_text(row, h, primary):
+    return (f"rise above today's opening price after {h} trading days" if primary == "total"
+            else f"outperform its peers over the next {h} trading days")
+
+
+def static_prompt(row, h, ci, primary="company"):
     """The original Time-LLM prompt: dataset/task description + input statistics."""
     path, lags = window_stats(row.ts, ci)
     return (f"Dataset description: daily data of Vietnamese stock {row.ticker} (price, foreign flows, VN-Index). "
-            f"Task description: predict whether the stock will outperform its peers over the next {h} trading days "
+            f"Task description: predict whether the stock will {task_text(row, h, primary)} "
             f"given the previous {SEQ_LEN} days. Input statistics: min value {path.min():+.3f}, max value "
             f"{path.max():+.3f}, median value {np.median(path):+.3f}, the trend of input is "
             f"{'upward' if path[-1] > path[0] else 'downward'}, top 5 lags are: {lags}.")
@@ -86,10 +93,10 @@ def news_lines(items):
     return out
 
 
-def build_prompt(tok, row, prompt, knowledge, h, ci, n_ts):
+def build_prompt(tok, row, prompt, knowledge, h, ci, n_ts, primary="company"):
     parts = []
     if prompt in ("static", "data", "news", "news_shuffled"):
-        parts.append(static_prompt(row, h, ci))
+        parts.append(static_prompt(row, h, ci, primary))
     if prompt == "data":
         parts.append(data_prompt(row, h, ci))
     parts.append("Input series: " + TS_TOKEN * n_ts)
@@ -97,7 +104,7 @@ def build_prompt(tok, row, prompt, knowledge, h, ci, n_ts):
         if knowledge:
             parts.append("News knowledge: " + KN_TOKEN * MAX_ITEMS)
         parts.append("Pre-open news about the company:\n" + "\n".join(news_lines(row.items)))
-    parts.append(f"Will {row.ticker} outperform its peers over the next {h} trading days?")
+    parts.append(f"Will {row.ticker} {task_text(row, h, primary)}?")
     return tok.apply_chat_template([{"role": "user", "content": "\n".join(parts)}], tokenize=False,
                                    add_generation_prompt=True)
 
@@ -111,7 +118,7 @@ class Split:
             items = [items[i] for i in rng.permutation(len(items))]
         news = a.prompt in ("news", "news_shuffled")
         df = df.assign(items=items)
-        self.prompts = [build_prompt(model.tok, r, a.prompt, a.knowledge, a.horizon, ci, model.n_ts)
+        self.prompts = [build_prompt(model.tok, r, a.prompt, a.knowledge, a.horizon, ci, model.n_ts, a.primary)
                         for r in df.itertuples()]
         ts = np.stack(df["ts"].to_list())
         self.ts = torch.from_numpy((ts - scaler[0]) / scaler[1]).float()
@@ -133,6 +140,11 @@ class Split:
         self.regime = regime_groups(torch.from_numpy(last[:, ci["mkt_ret_20"]]),
                                     torch.from_numpy(last[:, ci["mkt_vol_20"]]), vol_median)
         self.week = pd.to_datetime(df["date"]).dt.to_period("W").astype(str).to_numpy()
+        # anchor features (A): net LLM news sentiment and 60-day reversal; news only when the prompt has news
+        sent = np.array([sum(it["score"] for it in its) if news else 0 for its in items], float)
+        self.afeat = np.stack([sent, -last[:, ci["ret_60"]]], 1)
+        self.anchor = torch.zeros(len(df), 2)
+        self.dates = pd.to_datetime(df["date"]).to_numpy()
         self.df, self.tok = df, model.tok
 
     def week_batches(self, bs, rng):
@@ -153,57 +165,87 @@ class Split:
                 (kn[:, 0].to(device), kn[:, 1].to(device), kn[:, 2].to(device), kn[:, 3].to(device),
                  self.mask[idx].to(device)),
                 {"mkt": self.mkt_t[idx].to(device), "comp": self.comp_t[idx].to(device),
-                 "regime": self.regime[idx].to(device)})
+                 "regime": self.regime[idx].to(device)}, self.anchor[idx].to(device))
+
+
+# ---------------------------------------------------------------- anchor (A)
+class Anchor:
+    """Fixed-sign baseline: logistic regression on [net news sentiment, 60-day reversal], fitted on the
+    training split only, with coefficients clipped at >= 0 (each signal may only push in its known
+    direction). One model per target (total return, company-specific return)."""
+    def fit(self, s):
+        from sklearn.linear_model import LogisticRegression
+        self.mu, self.sd = s.afeat.mean(0), s.afeat.std(0) + 1e-8
+        z = (s.afeat - self.mu) / self.sd
+        self.w = []
+        for y in (s.ret > 0, s.rel > 0):
+            m = LogisticRegression(C=1.0).fit(z, y)
+            self.w.append((np.clip(m.coef_[0], 0, None), float(m.intercept_[0])))
+        return self
+
+    def apply(self, s):
+        z = (s.afeat - self.mu) / self.sd
+        s.anchor = torch.from_numpy(np.stack([z @ w + b for w, b in self.w], 1).astype(np.float32))
 
 
 # ---------------------------------------------------------------- eval
 def scores(out, loss_mode):
+    """Return (total-direction score, company-direction score), centred at 0."""
     if loss_mode == "full":
-        return torch.sigmoid(out["dir"]) - 0.5
+        return torch.sigmoid(out["dir_total"]) - 0.5, torch.sigmoid(out["dir_company"]) - 0.5
     if loss_mode in ("decomp", "dro", "dro_rank"):
-        return out["company"]
-    return out["market"] + out["company"]
+        return out["market"] + out["company"], out["company"]
+    t = out["market"] + out["company"]
+    return t, t
 
 
 @torch.no_grad()
 def predict(model, s, a, device, bs):
     model.eval()
-    sc, conf, w = [], [], []
+    pt_, pc_, conf, w = [], [], [], []
     for i in range(0, len(s), bs):
-        ids, am, ts, kn, _ = s.batch(list(range(i, min(i + bs, len(s)))), device)
-        with torch.autocast("cuda", dtype=torch.bfloat16):
-            out = model(ids, am, ts, kn)
-        sc.append(scores(out, a.loss).float().cpu()); conf.append(torch.sigmoid(out["conf"]).float().cpu())
+        ids, am, ts, kn, _, anc = s.batch(list(range(i, min(i + bs, len(s)))), device)
+        out = model(ids, am, ts, kn, anc)
+        p_tot, p_comp = scores(out, a.loss)
+        pt_.append(p_tot.float().cpu()); pc_.append(p_comp.float().cpu())
+        conf.append(torch.sigmoid(out["conf"]).float().cpu())
         extra = getattr(model.spec, "last_periods", None)
         if extra is None:
             extra = getattr(model.spec, "last_weights", None)
         if extra is not None:
             w.append(extra.float().cpu())
-    return torch.cat(sc).numpy(), torch.cat(conf).numpy(), (torch.cat(w).numpy() if w else None)
+    return (torch.cat(pt_).numpy(), torch.cat(pc_).numpy(), torch.cat(conf).numpy(),
+            torch.cat(w).numpy() if w else None)
 
 
-def evaluate(p, conf, s, thr, conf_thr, ltt_thr="off"):
-    y_rel, y_ret = s.rel > 0, s.ret > 0
-    lo, hi = thr
-    side = np.where(p >= hi, 1, np.where(p <= lo, -1, 0))
+def evaluate(p_tot, p_comp, conf, s, primary, thr, conf_thr="off", ltt_thr="off"):
+    """AUC for both targets; trades on the primary target (total -> raw return, company -> vs peers)."""
+    p, r = (p_tot, s.ret) if primary == "total" else (p_comp, s.rel)
+    y = r > 0
+    side = np.where(p >= thr[1], 1, np.where(p <= thr[0], -1, 0))
     t = side != 0
-    res = {"n": len(p), "auc_company": float(roc_auc_score(y_rel, p)), "auc_total": float(roc_auc_score(y_ret, p)),
-           "floor_company": float(max(y_rel.mean(), 1 - y_rel.mean()) * 100),
-           "n_trades": int(t.sum()),
-           "trade_win": float(np.mean((side[t] > 0) == y_rel[t]) * 100) if t.any() else float("nan"),
-           "trade_avg_rel_pct": float(np.mean(side[t] * s.rel[t]) * 100) if t.any() else float("nan")}
+    res = {"n": len(p), "auc_total": float(roc_auc_score(s.ret > 0, p_tot)),
+           "auc_company": float(roc_auc_score(s.rel > 0, p_comp)),
+           "floor_primary": float(max(y.mean(), 1 - y.mean()) * 100), "n_trades": int(t.sum()),
+           "trade_win": float(np.mean((side[t] > 0) == y[t]) * 100) if t.any() else float("nan"),
+           "trade_avg_pct": float(np.mean(side[t] * r[t]) * 100) if t.any() else float("nan")}
     for name, th in (("sel", conf_thr), ("ltt", ltt_thr)):
         if isinstance(th, str):
             continue
         if th is None:                       # Learn-then-Test could not certify any threshold: abstain
-            res.update({f"{name}_n": 0, f"{name}_win": float("nan"), f"{name}_avg_rel_pct": float("nan")})
+            res.update({f"{name}_n": 0, f"{name}_win": float("nan"), f"{name}_avg_pct": float("nan")})
             continue
         sel = conf >= th
         d = np.sign(p[sel])
         res.update({f"{name}_n": int(sel.sum()),
-                    f"{name}_win": float(np.mean((d > 0) == y_rel[sel]) * 100) if sel.any() else float("nan"),
-                    f"{name}_avg_rel_pct": float(np.mean(d * s.rel[sel]) * 100) if sel.any() else float("nan")})
+                    f"{name}_win": float(np.mean((d > 0) == y[sel]) * 100) if sel.any() else float("nan"),
+                    f"{name}_avg_pct": float(np.mean(d * r[sel]) * 100) if sel.any() else float("nan")})
     return res
+
+
+def recency_weights(dates, half_life_days):
+    age = (dates.max() - dates).astype("timedelta64[D]").astype(float)
+    return 0.5 ** (age / half_life_days)
 
 
 # ---------------------------------------------------------------- main
@@ -217,8 +259,16 @@ def main():
     ap.add_argument("--patching", default="bank_text_aligned",
                     choices=["fixed", "fft", "fft_attn", "fft_text", *BANK_MODES])
     ap.add_argument("--loss", default="full", choices=list(LOSSES))
+    ap.add_argument("--primary", default="total", choices=["total", "company"],
+                    help="target used for trading rules and the selective head (both are always reported)")
+    ap.add_argument("--shrink", type=float, default=1.0, help="penalty keeping the learned correction near the anchor")
+    ap.add_argument("--hyper_lr_mult", type=float, default=5.0)
+    ap.add_argument("--val_days", type=int, default=250, help="validation window (trading days) before the test year")
+    ap.add_argument("--select", default="last", choices=["last", "best"],
+                    help="last = fixed epochs (default); best = epoch with the best validation AUC")
     ap.add_argument("--ltt_alpha", type=float, default=0.45, help="max error rate certified on trades taken")
     ap.add_argument("--ltt_delta", type=float, default=0.1)
+    ap.add_argument("--ltt_half_life", type=float, default=90, help="recency weighting of validation (calendar days)")
     ap.add_argument("--coverage", type=float, default=0.3)
     ap.add_argument("--epochs", type=int, default=3)
     ap.add_argument("--bs", type=int, default=8)
@@ -235,7 +285,7 @@ def main():
     df = pd.read_pickle("data/text/events.pkl")
     cols = json.load(open("data/text/events_cols.json"))
     ci = {c: i for i, c in enumerate(cols)}
-    tr, va, te, scaler = split_fold(df, a.fold, a.horizon)
+    tr, va, te, scaler = split_fold(df, a.fold, a.horizon, a.val_days)
     tr, va, te = [d.dropna(subset=[f"rel_{a.horizon}", f"ret_{a.horizon}"]) for d in (tr, va, te)]
     if a.limit:
         tr, va, te = [d.sample(min(a.limit, len(d)), random_state=a.seed) for d in (tr, va, te)]
@@ -245,61 +295,76 @@ def main():
     print(f"trainable params: {sum(p.numel() for p in params):,} (LLM frozen)", flush=True)
     vol_median = float(np.median([t[-1][ci["mkt_vol_20"]] for t in tr["ts"]]))
     s_tr, s_va, s_te = [Split(d, model, a, scaler, ci, sd, rng, vol_median) for d in (tr, va, te)]
+    anchor = Anchor().fit(s_tr)
+    for s_ in (s_tr, s_va, s_te):
+        anchor.apply(s_)
+    print("anchor coefficients [sentiment, reversal] (total, company):",
+          [w.round(3).tolist() for w, _ in anchor.w], flush=True)
     print("train regime counts (down/lowvol, down/highvol, up/lowvol, up/highvol):",
           np.bincount(s_tr.regime.numpy(), minlength=4).tolist(), flush=True)
     dro = GroupDRO(device=device)
     print(f"train {len(s_tr)} val {len(s_va)} test {len(s_te)}\nprompt example:\n"
           + s_tr.prompts[0].replace(TS_TOKEN * model.n_ts, f"{TS_TOKEN}x{model.n_ts}")
           .replace(KN_TOKEN * MAX_ITEMS, f"{KN_TOKEN}x{MAX_ITEMS}")[:1500], flush=True)
-    opt = torch.optim.AdamW(params, lr=a.lr, weight_decay=0.05)
+    groups = model.param_groups(a.lr, a.hyper_lr_mult)
+    opt = torch.optim.AdamW(groups, weight_decay=0.05)
     steps = a.epochs * len(s_tr.week_batches(a.bs, np.random.default_rng(0)))
-    sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=a.lr, total_steps=steps, pct_start=0.1)
+    sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=[g["lr"] for g in groups], total_steps=steps, pct_start=0.1)
+    key = 0 if a.primary == "total" else 1
+    y_va = (s_va.ret if a.primary == "total" else s_va.rel) > 0
     best, best_state = -1.0, None
     for ep in range(a.epochs):
         model.train()
         t0, losses = time.time(), []
         for idx in s_tr.week_batches(a.bs, rng):
-            ids, am, ts, kn, y = s_tr.batch(idx, device)
-            with torch.autocast("cuda", dtype=torch.bfloat16):
-                out = model(ids, am, ts, kn)
-            out = {k: v.float() for k, v in out.items()}
-            loss = compute_loss(out, y, a.loss, a.coverage, dro)
+            ids, am, ts, kn, y, anc = s_tr.batch(idx, device)
+            out = {k: v.float() for k, v in model(ids, am, ts, kn, anc).items()}
+            loss = compute_loss(out, y, a.loss, a.coverage, dro, primary=a.primary, shrink=a.shrink)
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(params, 1.0); opt.step(); sched.step()
             losses.append(loss.item())
-        pv, _, _ = predict(model, s_va, a, device, a.bs * 2)
-        auc = roc_auc_score(s_va.rel > 0, pv)
-        print(f"epoch {ep+1}: loss {np.mean(losses):.4f} | val company-AUC {auc:.3f} | {time.time()-t0:.0f}s", flush=True)
-        if auc > best:
+        pv = predict(model, s_va, a, device, a.bs * 2)
+        auc = roc_auc_score(y_va, pv[key])
+        print(f"epoch {ep+1}: loss {np.mean(losses):.4f} | val {a.primary}-AUC {auc:.3f} | {time.time()-t0:.0f}s", flush=True)
+        if a.select == "last" or auc > best:
             best = auc
             best_state = {n: p.detach().cpu().clone() for n, p in model.named_parameters() if p.requires_grad}
     model.load_state_dict(best_state, strict=False)
-    pv, cv, _ = predict(model, s_va, a, device, a.bs * 2)
-    pt, ct, wt = predict(model, s_te, a, device, a.bs * 2)
+    pv_tot, pv_comp, cv, _ = predict(model, s_va, a, device, a.bs * 2)
+    pt_tot, pt_comp, ct, wt = predict(model, s_te, a, device, a.bs * 2)
+    pv = pv_tot if a.primary == "total" else pv_comp
+    pt = pt_tot if a.primary == "total" else pt_comp
     thr = (np.quantile(pv, a.trade_q), np.quantile(pv, 1 - a.trade_q))
     if a.loss == "full":
         conf_thr = float(np.quantile(cv, 1 - a.coverage))
-        ltt = ltt_threshold(cv, (pv > 0) == (s_va.rel > 0), a.ltt_alpha, a.ltt_delta)
+        ltt = ltt_threshold(cv, (pv > 0) == y_va, a.ltt_alpha, a.ltt_delta,
+                            weights=recency_weights(s_va.dates, a.ltt_half_life))
     else:
         conf_thr, ltt = "off", "off"
-    res = {"args": vars(a), "val": evaluate(pv, cv, s_va, thr, conf_thr, ltt),
-           "test": evaluate(pt, ct, s_te, thr, conf_thr, ltt), "ltt_threshold": ltt}
+    res = {"args": vars(a), "anchor_w": [[w.tolist(), b] for w, b in anchor.w],
+           "val": evaluate(pv_tot, pv_comp, cv, s_va, a.primary, thr, conf_thr, ltt),
+           "test": evaluate(pt_tot, pt_comp, ct, s_te, a.primary, thr, conf_thr, ltt), "ltt_threshold": ltt}
+    # the anchor alone, with its own validation thresholds: what the learned model must improve on
+    av, at = s_va.anchor.numpy(), s_te.anchor.numpy()
+    a_thr = (np.quantile(av[:, key], a.trade_q), np.quantile(av[:, key], 1 - a.trade_q))
+    res["anchor_test"] = evaluate(at[:, 0], at[:, 1], None, s_te, a.primary, a_thr)
     if wt is not None:   # C2 interpretability: learned band periods (KASD) or band weights (fft*) per event type
-        key = "band_periods_by_event" if a.patching in BANK_MODES else "band_weights_by_event"
-        res[key] = {e: wt[np.array(s_te.events) == e].mean(0).round(3).tolist() for e in sorted(set(s_te.events))}
+        k = "band_periods_by_event" if a.patching in BANK_MODES else "band_weights_by_event"
+        res[k] = {e: wt[np.array(s_te.events) == e].mean(0).round(3).tolist() for e in sorted(set(s_te.events))}
     tag = (f"{a.backbone}_f{a.fold}_h{a.horizon}_p-{a.prompt}_k{a.knowledge}_{a.patching}_{a.loss}_s{a.seed}"
            + (f"_limit{a.limit}" if a.limit else ""))
     json.dump(res, open(f"{a.out}/{tag}.json", "w"), indent=1)
     os.makedirs("checkpoints/plus", exist_ok=True)   # trainable weights only (the LLM is frozen and reloaded by name)
     torch.save({"args": vars(a), "state": best_state, "scaler": scaler, "sd": sd, "vol_median": vol_median,
-                "trade_thresholds": thr, "conf_threshold": conf_thr, "ltt_threshold": ltt},
+                "anchor": anchor.__dict__, "trade_thresholds": thr, "conf_threshold": conf_thr, "ltt_threshold": ltt},
                f"checkpoints/plus/{tag}.pt")
     side_q = np.where(pt >= thr[1], 1, np.where(pt <= thr[0], -1, 0))
     sel_conf = ct >= conf_thr if not isinstance(conf_thr, str) else np.zeros(len(pt), bool)
     sel_ltt = ct >= ltt if isinstance(ltt, float) else np.zeros(len(pt), bool)
-    np.savez(f"{a.out}/pred_{tag}.npz", p=pt, conf=ct, rel=s_te.rel, ret=s_te.ret, side_q=side_q,
-             sel_conf=sel_conf, sel_ltt=sel_ltt, ticker=s_te.df["ticker"].to_numpy(), date=s_te.df["date"].to_numpy())
-    print(json.dumps({k: res[k] for k in ("val", "test")}, indent=1))
+    np.savez(f"{a.out}/pred_{tag}.npz", p=pt, p_total=pt_tot, p_company=pt_comp, anchor=at, conf=ct,
+             rel=s_te.rel, ret=s_te.ret, side_q=side_q, sel_conf=sel_conf, sel_ltt=sel_ltt,
+             ticker=s_te.df["ticker"].to_numpy(), date=s_te.df["date"].to_numpy())
+    print(json.dumps({k: res[k] for k in ("val", "test", "anchor_test")}, indent=1))
 
 
 if __name__ == "__main__":

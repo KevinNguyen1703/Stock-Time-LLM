@@ -28,6 +28,7 @@ TS_TOKEN, KN_TOKEN = "<|ts|>", "<|kn|>"
 EVENTS = list(EVENT_VI)
 SOURCES = ["filing", "press", "market_stock", "market_bank", "market_macro"]
 MAX_ITEMS, MAX_AGE = 8, 5
+N_KSTATS = 3   # explicit news statistics for the hypernetwork: net sentiment, mean sentiment, item count
 BRANCHES = {"fixed": [8], "fft": [4, 8, 16], "fft_attn": [4, 8, 16], "fft_text": [4, 8, 16]}
 BANK_MODES = ("bank", "bank_text", "bank_text_aligned")   # C2: static bank / + hypernetwork / + period-aligned
 BANK_PERIODS = (48.0, 20.0, 10.0, 5.0, 2.5)               # initial band centres (days)
@@ -96,7 +97,7 @@ class SpectralPatching(nn.Module):
             e.append(torch.log(power[:, band].sum(1) + 1e-6))
         return torch.stack(e, 1)                                                    # [B, nb]
 
-    def forward(self, x, knowledge=None):
+    def forward(self, x, knowledge=None, k_stats=None):
         toks = []
         for i, p in enumerate(self.lens):
             u = x.unfold(1, p, p // 2)                                              # [B, P, F, p]
@@ -128,8 +129,9 @@ class AdaptiveSpectral(nn.Module):
         self.mu_raw = nn.Parameter(torch.logit((f0 - self.f_lo) / (0.5 - self.f_lo)))
         self.sig_raw = nn.Parameter(torch.log(torch.expm1(f0 * 0.5)))      # sigma = softplus(.)
         if mode in ("bank_text", "bank_text_aligned"):
-            self.hyper = nn.Sequential(nn.Linear(d + n_feat, d), nn.GELU(), nn.Linear(d, 2 * self.K))
-            nn.init.zeros_(self.hyper[-1].weight); nn.init.zeros_(self.hyper[-1].bias)   # starts as static bank
+            self.hyper = nn.Sequential(nn.Linear(d + n_feat + N_KSTATS, d), nn.GELU(), nn.Linear(d, 2 * self.K))
+            # small non-zero init: a zero-initialised output layer received too little gradient to move
+            nn.init.normal_(self.hyper[-1].weight, std=0.02); nn.init.zeros_(self.hyper[-1].bias)
         self.embed = nn.Linear(BANK_POINTS * n_feat, d)
         self.band_emb = nn.Parameter(torch.zeros(self.K, d))
         self.pos = nn.Parameter(torch.zeros(BANK_TOKENS, d))
@@ -141,11 +143,11 @@ class AdaptiveSpectral(nn.Module):
         mu = self.f_lo + (0.5 - self.f_lo) * torch.sigmoid(self.mu_raw)
         return mu, nn.functional.softplus(self.sig_raw) + 1e-3
 
-    def band_params(self, x, k_sum):
+    def band_params(self, x, k_sum, k_stats):
         mu, sig = self.base_params()
         mu, sig = mu.expand(x.shape[0], -1), sig.expand(x.shape[0], -1)
         if hasattr(self, "hyper"):
-            delta = 0.5 * torch.tanh(self.hyper(torch.cat([k_sum, x[:, -1]], -1)))
+            delta = 0.5 * torch.tanh(self.hyper(torch.cat([k_sum, x[:, -1], k_stats], -1)))
             # shift in logit space so the centre stays inside (1/T, 0.5) without a gradient-killing clamp
             z = torch.logit((mu - self.f_lo) / (0.5 - self.f_lo)) + delta[:, :self.K]
             mu, sig = self.f_lo + (0.5 - self.f_lo) * torch.sigmoid(z), sig * torch.exp(delta[:, self.K:])
@@ -160,9 +162,9 @@ class AdaptiveSpectral(nn.Module):
         ov = g @ g.T
         return (ov.sum() - ov.diagonal().sum()) / (self.K * (self.K - 1))
 
-    def forward(self, x, k_sum):
+    def forward(self, x, k_sum, k_stats=None):
         B, T, F = x.shape
-        mu, sig = self.band_params(x, k_sum)                                       # [B, K]
+        mu, sig = self.band_params(x, k_sum, k_stats)                                       # [B, K]
         freqs = torch.fft.rfftfreq(T, device=x.device)
         G = torch.exp(-0.5 * ((freqs[None, None] - mu[..., None]) / sig[..., None]) ** 2)   # [B, K, Nf]
         X = torch.fft.rfft(x, dim=1)                                               # [B, Nf, F]
@@ -223,19 +225,36 @@ class TimeLLMPlus(nn.Module):
         self.reprog = Reprogram(d, d_llm, emb[:20000].clone())
         self.kn_proj = nn.Linear(d, d_llm)
         self.trunk = nn.Sequential(nn.LayerNorm(d_llm), nn.Dropout(0.1), nn.Linear(d_llm, 256), nn.GELU())
-        self.heads = nn.Linear(256, 4)   # [market, company, company-direction logit, confidence logit]
+        # [market, company, total-direction correction, company-direction correction, confidence]
+        self.heads = nn.Linear(256, 5)
+        with torch.no_grad():   # corrections start at exactly 0, so the model starts at the anchor
+            self.heads.weight[2:4].zero_(); self.heads.bias[2:4].zero_()
 
     def trainable_parameters(self):
         return [p for n, p in self.named_parameters() if p.requires_grad and not n.startswith("llm.")]
 
-    def forward(self, input_ids, attention_mask, ts, kn):
+    def param_groups(self, lr, hyper_mult=5.0):
+        hyper = [p for n, p in self.named_parameters() if n.startswith("spec.hyper.")]
+        ids = {id(p) for p in hyper}
+        rest = [p for p in self.trainable_parameters() if id(p) not in ids]
+        return [{"params": rest, "lr": lr}] + ([{"params": hyper, "lr": lr * hyper_mult}] if hyper else [])
+
+    @staticmethod
+    def knowledge_stats(kn):
+        sc, mask = kn[1].float(), kn[4].float()
+        n = mask.sum(1)
+        net = (sc * mask).sum(1)
+        return torch.stack([net / 4, net / n.clamp(min=1) / 2, n / MAX_ITEMS], 1)
+
+    def forward(self, input_ids, attention_mask, ts, kn, anchor):
+        """anchor: [B, 2] fixed-sign baseline logits (total, company) fitted on training data only."""
         # Only the frozen LLM runs in bf16. All trainable modules run in fp32: under bf16 autocast the heads'
         # outputs keep ~3 significant digits and per-event score differences were rounded to a single value.
         placeholder = (input_ids == self.ts_id) | (input_ids == self.kn_id)
         emb = self.llm.get_input_embeddings()(torch.where(placeholder, 0, input_ids))
         with torch.autocast("cuda", enabled=False):
             k_items, k_sum = self.know(*kn)
-            soft = self.reprog(torch.cat(self.spec(ts.float(), k_sum), 1))        # [B, n_ts, d_llm]
+            soft = self.reprog(torch.cat(self.spec(ts.float(), k_sum, self.knowledge_stats(kn)), 1))
             kt = self.kn_proj(k_items) if self.use_knowledge else None
         m = input_ids == self.ts_id
         emb = emb.masked_scatter(m.unsqueeze(-1), soft.to(emb.dtype).reshape(-1, soft.shape[-1]))
@@ -249,7 +268,8 @@ class TimeLLMPlus(nn.Module):
         with torch.autocast("cuda", enabled=False):
             o = self.heads(self.trunk(h[torch.arange(h.shape[0]), last].float()))
         aux = getattr(self.spec, "aux", None)
-        return {"market": o[:, 0], "company": o[:, 1], "dir": o[:, 2], "conf": o[:, 3],
+        return {"market": o[:, 0], "company": o[:, 1], "corr_total": o[:, 2], "corr_company": o[:, 3],
+                "dir_total": anchor[:, 0] + o[:, 2], "dir_company": anchor[:, 1] + o[:, 3], "conf": o[:, 4],
                 "aux": aux if isinstance(aux, torch.Tensor) and aux.requires_grad else torch.zeros((), device=o.device)}
 
 
@@ -296,7 +316,8 @@ def selective_loss(dir_logit, conf_logit, y, coverage, lam=8.0):
     return risk + lam * torch.relu(coverage - c.mean()) ** 2
 
 
-def compute_loss(out, batch, loss_mode, coverage, dro=None, rank_weight=0.5, dir_weight=0.5, aux_weight=0.05):
+def compute_loss(out, batch, loss_mode, coverage, dro=None, rank_weight=0.5, dir_weight=0.5, aux_weight=0.05,
+                 primary="total", shrink=1.0):
     """C3 ablation ladder: mse -> hybrid (earlier) -> decomp -> dro -> dro_rank -> full (+ selective)."""
     total_true = batch["mkt"] + batch["comp"]
     total_pred = out["market"] + out["company"]
@@ -317,16 +338,22 @@ def compute_loss(out, batch, loss_mode, coverage, dro=None, rank_weight=0.5, dir
     loss = loss + rank_weight * rank_loss(out["company"], batch["comp"])
     if loss_mode == "dro_rank":
         return loss + aux
-    y = (batch["comp"] > 0).float()
-    return loss + selective_loss(out["dir"], out["conf"], y, coverage) + aux
+    y_tot, y_comp = (total_true > 0).float(), (batch["comp"] > 0).float()
+    bce = nn.functional.binary_cross_entropy_with_logits
+    loss = loss + dir_weight * (bce(out["dir_total"], y_tot) + bce(out["dir_company"], y_comp))
+    loss = loss + shrink * (out["corr_total"] ** 2 + out["corr_company"] ** 2).mean()   # stay near the anchor
+    key, y = ("dir_total", y_tot) if primary == "total" else ("dir_company", y_comp)
+    return loss + selective_loss(out[key], out["conf"], y, coverage) + aux
 
 
-def ltt_threshold(conf, correct, alpha=0.45, delta=0.1, min_n=20):
+def ltt_threshold(conf, correct, alpha=0.45, delta=0.1, min_n=20, weights=None):
     """Learn-then-Test (fixed-sequence) conformal risk control on validation.
 
     Tests thresholds from most to least conservative; keeps lowering while the null "error rate on the
     trades taken > alpha" is rejected at level delta (binomial tail). Returns the lowest certified
-    threshold, or None (abstain) if even the most conservative one cannot be certified."""
+    threshold, or None (abstain) if even the most conservative one cannot be certified.
+    With `weights` (e.g. recency weights) the error rate is weighted and the binomial test uses the Kish
+    effective sample size, a heuristic shift-aware variant: recent validation days count more."""
     from scipy.stats import binom
     chosen = None
     for q in [0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.0]:
@@ -335,7 +362,14 @@ def ltt_threshold(conf, correct, alpha=0.45, delta=0.1, min_n=20):
         n = int(sel.sum())
         if n < min_n:
             continue
-        k = int((~correct[sel]).sum())
+        if weights is None:
+            k = int((~correct[sel]).sum())
+        else:
+            w = weights[sel]
+            n = int((w.sum() ** 2) / (w ** 2).sum())
+            if n < min_n:
+                continue
+            k = int(round(n * float((w * ~correct[sel]).sum() / w.sum())))
         if binom.cdf(k, n, alpha) <= delta:
             chosen = tau
         else:
