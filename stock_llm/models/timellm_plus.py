@@ -4,8 +4,10 @@ C1  Event-grounded news prompting: the frozen LLM's structured reading of pre-op
     sentiment, age, source) is given both as prompt text and as dedicated knowledge tokens.
 C2  Knowledge-Conditioned Adaptive Spectral Decomposition (KASD): a learnable Gaussian band-pass filter
     bank in the frequency domain splits the input into K band components; a hypernetwork reads the news
-    knowledge and the current market state and shifts each band's centre frequency and width per sample
-    (text changes WHICH components are extracted, not how they are weighted); each band is then patched
+    knowledge and the current market state, plus an explicit per-event-type spectral prior, and shifts each
+    band's centre frequency and width per sample (text changes WHICH components are extracted, not how they
+    are weighted); during training the bands are supervised to explain the spectrum of the realised
+    post-event return path (response-spectrum NLL), which teaches which time scales follow which news; each band is then patched
     with a patch length equal to its own sample-specific period (one patch ~ one cycle), implemented with
     differentiable resampling so the patch length receives gradients; a diversity penalty keeps the bands
     apart. (`fixed`, `fft`, `fft_attn`, `fft_text` remain as the earlier patching variants for ablation.)
@@ -33,6 +35,7 @@ BRANCHES = {"fixed": [8], "fft": [4, 8, 16], "fft_attn": [4, 8, 16], "fft_text":
 BANK_MODES = ("bank", "bank_text", "bank_text_aligned")   # C2: static bank / + hypernetwork / + period-aligned
 BANK_PERIODS = (48.0, 20.0, 10.0, 5.0, 2.5)               # initial band centres (days)
 BANK_TOKENS, BANK_POINTS, BANK_FIXED_LEN = 12, 8, 8.0
+RESPONSE_WEIGHT = 4.0   # response-spectrum NLL inside spec.aux (x aux_weight 0.05 in the loss = 0.2 overall)
 BACKBONES = {"qwen1.5b": "Qwen/Qwen2.5-1.5B-Instruct", "qwen7b": "Qwen/Qwen2.5-7B-Instruct"}
 
 
@@ -97,7 +100,7 @@ class SpectralPatching(nn.Module):
             e.append(torch.log(power[:, band].sum(1) + 1e-6))
         return torch.stack(e, 1)                                                    # [B, nb]
 
-    def forward(self, x, knowledge=None, k_stats=None):
+    def forward(self, x, knowledge=None, k_stats=None, ev=None, mask=None, future=None):
         toks = []
         for i, p in enumerate(self.lens):
             u = x.unfold(1, p, p // 2)                                              # [B, P, F, p]
@@ -132,6 +135,10 @@ class AdaptiveSpectral(nn.Module):
             self.hyper = nn.Sequential(nn.Linear(d + n_feat + N_KSTATS, d), nn.GELU(), nn.Linear(d, 2 * self.K))
             # small non-zero init: a zero-initialised output layer received too little gradient to move
             nn.init.normal_(self.hyper[-1].weight, std=0.02); nn.init.zeros_(self.hyper[-1].bias)
+            # explicit event-type spectral prior: one learned (centre, width) shift per event type
+            # (last row = "no news"), averaged over the event's news items
+            self.event_shift = nn.Embedding(len(EVENTS) + 1, 2 * self.K)
+            nn.init.normal_(self.event_shift.weight, std=0.1)
         self.embed = nn.Linear(BANK_POINTS * n_feat, d)
         self.band_emb = nn.Parameter(torch.zeros(self.K, d))
         self.pos = nn.Parameter(torch.zeros(BANK_TOKENS, d))
@@ -143,11 +150,20 @@ class AdaptiveSpectral(nn.Module):
         mu = self.f_lo + (0.5 - self.f_lo) * torch.sigmoid(self.mu_raw)
         return mu, nn.functional.softplus(self.sig_raw) + 1e-3
 
-    def band_params(self, x, k_sum, k_stats):
+    def event_prior(self, ev, mask):
+        m = mask.float().unsqueeze(-1)
+        mean = (self.event_shift(ev) * m).sum(1) / m.sum(1).clamp(min=1)
+        none = self.event_shift.weight[-1].expand_as(mean)
+        return torch.where(mask.any(1, keepdim=True), mean, none)
+
+    def band_params(self, x, k_sum, k_stats, ev=None, mask=None):
         mu, sig = self.base_params()
         mu, sig = mu.expand(x.shape[0], -1), sig.expand(x.shape[0], -1)
         if hasattr(self, "hyper"):
-            delta = 0.5 * torch.tanh(self.hyper(torch.cat([k_sum, x[:, -1], k_stats], -1)))
+            raw = self.hyper(torch.cat([k_sum, x[:, -1], k_stats], -1))
+            if ev is not None:
+                raw = raw + self.event_prior(ev, mask)
+            delta = 0.5 * torch.tanh(raw)
             # shift in logit space so the centre stays inside (1/T, 0.5) without a gradient-killing clamp
             z = torch.logit((mu - self.f_lo) / (0.5 - self.f_lo)) + delta[:, :self.K]
             mu, sig = self.f_lo + (0.5 - self.f_lo) * torch.sigmoid(z), sig * torch.exp(delta[:, self.K:])
@@ -162,9 +178,22 @@ class AdaptiveSpectral(nn.Module):
         ov = g @ g.T
         return (ov.sum() - ov.diagonal().sum()) / (self.K * (self.K - 1))
 
-    def forward(self, x, k_sum, k_stats=None):
+    def response_nll(self, mu, sig, future):
+        """Response-spectrum supervision (training only): the bands, as an equal-weight mixture of normalised
+        Gaussians over frequency, should explain the power spectrum of the realised post-event return path.
+        A likelihood, so it cannot be satisfied by simply widening every band."""
+        H = future.shape[1]
+        f = torch.fft.rfftfreq(H, device=future.device)[1:]                        # drop the mean (f = 0)
+        P = torch.fft.rfft(future - future.mean(1, keepdim=True), dim=1).abs()[:, 1:] ** 2
+        p = P / P.sum(1, keepdim=True).clamp(min=1e-12)                           # response spectrum, sums to 1
+        g = torch.exp(-0.5 * ((f[None, None] - mu[..., None]) / sig[..., None]) ** 2)
+        g = g / g.sum(-1, keepdim=True).clamp(min=1e-12)                          # each band: a distribution
+        mix = g.mean(1)                                                            # [B, Nf]
+        return -(p * torch.log(mix + 1e-6)).sum(1).mean()
+
+    def forward(self, x, k_sum, k_stats=None, ev=None, mask=None, future=None):
         B, T, F = x.shape
-        mu, sig = self.band_params(x, k_sum, k_stats)                                       # [B, K]
+        mu, sig = self.band_params(x, k_sum, k_stats, ev, mask)                            # [B, K]
         freqs = torch.fft.rfftfreq(T, device=x.device)
         G = torch.exp(-0.5 * ((freqs[None, None] - mu[..., None]) / sig[..., None]) ** 2)   # [B, K, Nf]
         X = torch.fft.rfft(x, dim=1)                                               # [B, Nf, F]
@@ -186,6 +215,8 @@ class AdaptiveSpectral(nn.Module):
         tok = self.enc(tok.reshape(B * self.K, BANK_TOKENS, -1)).reshape(B, self.K * BANK_TOKENS, -1)
         self.last_periods = (1.0 / mu).detach()
         self.aux = self.diversity()
+        if future is not None and hasattr(self, "hyper"):
+            self.aux = self.aux + RESPONSE_WEIGHT * self.response_nll(mu, sig, future)
         return [tok]
 
 
@@ -246,7 +277,7 @@ class TimeLLMPlus(nn.Module):
         net = (sc * mask).sum(1)
         return torch.stack([net / 4, net / n.clamp(min=1) / 2, n / MAX_ITEMS], 1)
 
-    def forward(self, input_ids, attention_mask, ts, kn, anchor):
+    def forward(self, input_ids, attention_mask, ts, kn, anchor, future=None):
         """anchor: [B, 2] fixed-sign baseline logits (total, company) fitted on training data only."""
         # Only the frozen LLM runs in bf16. All trainable modules run in fp32: under bf16 autocast the heads'
         # outputs keep ~3 significant digits and per-event score differences were rounded to a single value.
@@ -254,7 +285,8 @@ class TimeLLMPlus(nn.Module):
         emb = self.llm.get_input_embeddings()(torch.where(placeholder, 0, input_ids))
         with torch.autocast("cuda", enabled=False):
             k_items, k_sum = self.know(*kn)
-            soft = self.reprog(torch.cat(self.spec(ts.float(), k_sum, self.knowledge_stats(kn)), 1))
+            soft = self.reprog(torch.cat(self.spec(ts.float(), k_sum, self.knowledge_stats(kn), kn[0], kn[4],
+                                                   future if self.training else None), 1))
             kt = self.kn_proj(k_items) if self.use_knowledge else None
         m = input_ids == self.ts_id
         emb = emb.masked_scatter(m.unsqueeze(-1), soft.to(emb.dtype).reshape(-1, soft.shape[-1]))

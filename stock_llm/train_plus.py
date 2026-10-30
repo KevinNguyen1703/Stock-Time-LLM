@@ -110,6 +110,26 @@ def build_prompt(tok, row, prompt, knowledge, h, ci, n_ts, primary="company"):
 
 
 # ---------------------------------------------------------------- data
+_PATHS = {}
+
+
+def future_paths(df, h):
+    """Realised daily log-return path of each event's holding window (day 0 = open-to-close of the event day,
+    then close-to-close), i.e. the label window. Used only as C2 training supervision, never as an input."""
+    from stock_llm.data.prices import load_prices
+    out = np.zeros((len(df), h), np.float32)
+    for j, (t, d) in enumerate(zip(df["ticker"], pd.to_datetime(df["date"]))):
+        if t not in _PATHS:
+            px = load_prices(t).set_index("Date")
+            _PATHS[t] = (px.index, np.log(px["Close"] / px["Open"]).to_numpy(),
+                         np.log(px["Close"]).diff().fillna(0).to_numpy())
+        idx, intra, cc = _PATHS[t]
+        p = idx.get_indexer([d])[0]
+        if p >= 0 and p + h <= len(idx):
+            out[j] = np.r_[intra[p], cc[p + 1:p + h]]
+    return out
+
+
 class Split:
     def __init__(self, df, model, a, scaler, ci, sd, rng, vol_median):
         df = df.reset_index(drop=True)
@@ -145,6 +165,7 @@ class Split:
         self.afeat = sent[:, None]
         self.anchor = torch.zeros(len(df), 2)
         self.dates = pd.to_datetime(df["date"]).to_numpy()
+        self.future = torch.from_numpy(future_paths(df, a.horizon))
         self.df, self.tok = df, model.tok
 
     def week_batches(self, bs, rng):
@@ -165,7 +186,7 @@ class Split:
                 (kn[:, 0].to(device), kn[:, 1].to(device), kn[:, 2].to(device), kn[:, 3].to(device),
                  self.mask[idx].to(device)),
                 {"mkt": self.mkt_t[idx].to(device), "comp": self.comp_t[idx].to(device),
-                 "regime": self.regime[idx].to(device)}, self.anchor[idx].to(device))
+                 "regime": self.regime[idx].to(device)}, self.anchor[idx].to(device), self.future[idx].to(device))
 
 
 # ---------------------------------------------------------------- anchor (A)
@@ -210,7 +231,7 @@ def predict(model, s, a, device, bs):
     model.eval()
     pt_, pc_, conf, w = [], [], [], []
     for i in range(0, len(s), bs):
-        ids, am, ts, kn, _, anc = s.batch(list(range(i, min(i + bs, len(s)))), device)
+        ids, am, ts, kn, _, anc, _ = s.batch(list(range(i, min(i + bs, len(s)))), device)
         out = model(ids, am, ts, kn, anc)
         p_tot, p_comp = scores(out, a.loss)
         pt_.append(p_tot.float().cpu()); pc_.append(p_comp.float().cpu())
@@ -327,8 +348,8 @@ def main():
         model.train()
         t0, losses = time.time(), []
         for idx in s_tr.week_batches(a.bs, rng):
-            ids, am, ts, kn, y, anc = s_tr.batch(idx, device)
-            out = {k: v.float() for k, v in model(ids, am, ts, kn, anc).items()}
+            ids, am, ts, kn, y, anc, fut = s_tr.batch(idx, device)
+            out = {k: v.float() for k, v in model(ids, am, ts, kn, anc, fut).items()}
             loss = compute_loss(out, y, a.loss, a.coverage, dro, primary=a.primary, shrink=a.shrink)
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(params, 1.0); opt.step(); sched.step()
