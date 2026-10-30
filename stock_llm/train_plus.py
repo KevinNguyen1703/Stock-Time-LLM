@@ -358,7 +358,7 @@ def main():
         k = "band_periods_by_event" if a.patching in BANK_MODES else "band_weights_by_event"
         res[k] = {e: wt[np.array(s_te.events) == e].mean(0).round(3).tolist() for e in sorted(set(s_te.events))}
     tag = (f"{a.backbone}_f{a.fold}_h{a.horizon}_p-{a.prompt}_k{a.knowledge}_{a.patching}_{a.loss}_s{a.seed}"
-           + (f"_limit{a.limit}" if a.limit else ""))
+           + (f"_shrink{a.shrink:g}" if a.shrink != 1.0 else "") + (f"_limit{a.limit}" if a.limit else ""))
     json.dump(res, open(f"{a.out}/{tag}.json", "w"), indent=1)
     os.makedirs("checkpoints/plus", exist_ok=True)   # trainable weights only (the LLM is frozen and reloaded by name)
     torch.save({"args": vars(a), "state": best_state, "scaler": scaler, "sd": sd, "vol_median": vol_median,
