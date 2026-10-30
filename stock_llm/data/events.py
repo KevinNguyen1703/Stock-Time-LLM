@@ -107,9 +107,10 @@ def build_events(horizons=(5, 30, 45)):
     return pd.DataFrame(rows), list(f.columns)
 
 
-def split_fold(df, fold, h, val_days=VAL_DAYS):
-    """Purged rolling-origin split for horizon h. Returns train, val, test frames and feature scaler."""
-    lo, hi = map(pd.Timestamp, FOLDS[fold])
+def split_fold(df, fold, h, val_days=VAL_DAYS, test_range=None):
+    """Purged rolling-origin split for horizon h. Returns train, val, test frames and feature scaler.
+    test_range=(start, end) overrides the fold's test period (used for walk-forward retraining)."""
+    lo, hi = map(pd.Timestamp, test_range or FOLDS[fold])
     all_days = np.sort(df["date"].unique())
     d = df.dropna(subset=[f"ret_{h}"])
     test = d[(d["date"] >= lo) & (d["date"] < hi)]

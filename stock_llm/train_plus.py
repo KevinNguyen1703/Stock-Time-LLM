@@ -284,6 +284,8 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="smoke test: use only this many samples per split")
     ap.add_argument("--out", default="reports/plus")
     ap.add_argument("--tag_suffix", default="", help="appended to result/checkpoint names (used by the search)")
+    ap.add_argument("--test_start", default=None, help="override the fold's test period (walk-forward), e.g. 2025-04-01")
+    ap.add_argument("--test_end", default=None)
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     torch.manual_seed(a.seed); np.random.seed(a.seed)
@@ -292,7 +294,8 @@ def main():
     df = pd.read_pickle("data/text/events.pkl")
     cols = json.load(open("data/text/events_cols.json"))
     ci = {c: i for i, c in enumerate(cols)}
-    tr, va, te, scaler = split_fold(df, a.fold, a.horizon, a.val_days)
+    rng_ = (a.test_start, a.test_end) if a.test_start else None
+    tr, va, te, scaler = split_fold(df, a.fold, a.horizon, a.val_days, rng_)
     tr, va, te = [d.dropna(subset=[f"rel_{a.horizon}", f"ret_{a.horizon}"]) for d in (tr, va, te)]
     if a.limit:
         tr, va, te = [d.sample(min(a.limit, len(d)), random_state=a.seed) for d in (tr, va, te)]
