@@ -19,7 +19,7 @@ from stock_llm.runmany import run_jobs
 from stock_llm.walk_forward import QUARTERS
 
 OUT = "reports/walkforward_c3"
-MODELS = {"c3": "sel_evidence", "dir": "dir", "mse": "mse"}
+MODELS = {"c3": "sel_evidence", "dir": "dir", "mse": "mse", "c3rel": "sel_evidence_rel"}
 
 
 def jobs():
@@ -36,8 +36,9 @@ def trades(m):
     rows = []
     for f in sorted(glob.glob(f"{OUT}/{m}/pred_*_wf*.npz")):
         z = np.load(f, allow_pickle=True)
-        if m == "c3":
-            side = np.where(z["sel_conf"].astype(bool), np.sign(z["p_total"]), 0)
+        if m.startswith("c3"):
+            centre = float(z["p_center"]) if "p_center" in z.files else 0.0
+            side = np.where(z["sel_conf"].astype(bool), np.sign(z["p_total"] - centre), 0)
         else:
             side = z["side_q"]
         t = side != 0
@@ -62,5 +63,7 @@ def summary():
 
 
 if __name__ == "__main__":
-    run_jobs(jobs())
+    import sys
+    only = sys.argv[1:]          # optional: model names to run (e.g. c3rel); finished runs are skipped anyway
+    run_jobs([j for j in jobs() if not only or j[0].split("_")[1] in only])
     summary()

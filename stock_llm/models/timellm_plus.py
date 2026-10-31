@@ -322,8 +322,9 @@ class TimeLLMPlus(nn.Module):
 
 LOSSES = ("mse", "hybrid", "decomp", "dro", "dro_rank", "full",
           "sel", "hybrid_sel", "sel_profit", "sel_regime", "sel_evidence",   # C3 redesign (selection-focused)
+          "sel_evidence_rel",                                    # + regime-neutral (balanced) direction
           "dir")                                                 # reference: anchored direction head, no selection
-SEL_LOSSES = ("sel", "hybrid_sel", "sel_profit", "sel_regime", "sel_evidence", "dir")
+SEL_LOSSES = ("sel", "hybrid_sel", "sel_profit", "sel_regime", "sel_evidence", "sel_evidence_rel", "dir")
 
 
 def regime_groups(mkt_ret_20, mkt_vol_20, vol_median):
@@ -357,11 +358,11 @@ def rank_loss(score, y):
     return nn.functional.softplus(-(score[:, None] - score[None, :]))[mask].mean()
 
 
-def selective_loss(dir_logit, conf_logit, y, coverage, lam=8.0, weight=None):
+def selective_loss(dir_logit, conf_logit, y, coverage, lam=8.0, weight=None, pos_weight=None):
     """SelectiveNet-style: confidence-weighted BCE on the trades taken, plus a coverage penalty.
     weight (optional, profit-aware selection): per-event importance, e.g. the size of the move."""
     c = torch.sigmoid(conf_logit)
-    bce = nn.functional.binary_cross_entropy_with_logits(dir_logit, y, reduction="none")
+    bce = nn.functional.binary_cross_entropy_with_logits(dir_logit, y, reduction="none", pos_weight=pos_weight)
     if weight is not None:
         c_w = c * weight
         risk = (c_w * bce).sum() / c_w.sum().clamp(min=1e-6)
@@ -371,7 +372,9 @@ def selective_loss(dir_logit, conf_logit, y, coverage, lam=8.0, weight=None):
 
 
 def compute_loss(out, batch, loss_mode, coverage, dro=None, rank_weight=0.5, dir_weight=0.5, aux_weight=0.05,
-                 primary="total", shrink=1.0):
+                 primary="total", shrink=1.0, pos_weight=None):
+    """pos_weight (used by *_rel losses): (1 - up_rate) / up_rate of the training set, so the direction head
+    is trained on balanced classes and does not absorb the training years' market drift."""
     """C3 ablation ladder: mse -> hybrid (earlier) -> decomp -> dro -> dro_rank -> full (+ selective)."""
     total_true = batch["mkt"] + batch["comp"]
     total_pred = out["market"] + out["company"]
@@ -385,13 +388,14 @@ def compute_loss(out, batch, loss_mode, coverage, dro=None, rank_weight=0.5, dir
             base = nn.functional.mse_loss(total_pred, total_true) + dir_weight * bce(3 * total_pred, up)
         else:
             base = nn.functional.mse_loss(total_pred, total_true)
-        base = base + dir_weight * bce(out["dir_total"], up) + shrink * (out["corr_total"] ** 2).mean()
+        pw = pos_weight if loss_mode.endswith("_rel") else None
+        base = base + dir_weight * bce(out["dir_total"], up, pos_weight=pw) + shrink * (out["corr_total"] ** 2).mean()
         w = None
-        if loss_mode in ("sel_profit", "sel_regime", "sel_evidence"):   # profit-aware: big moves matter more
+        if loss_mode in ("sel_profit", "sel_regime", "sel_evidence", "sel_evidence_rel"):   # profit-aware
             w = total_true.abs() / total_true.abs().mean().clamp(min=1e-6)
         if loss_mode == "dir":
             return base + aux
-        return base + selective_loss(out["dir_total"], out["conf"], up, coverage, weight=w) + aux
+        return base + selective_loss(out["dir_total"], out["conf"], up, coverage, weight=w, pos_weight=pw) + aux
     if loss_mode == "hybrid":          # the earlier hybrid loss: MSE + soft directional BCE on the total
         up = (total_true > 0).float()
         return nn.functional.mse_loss(total_pred, total_true) + dir_weight * \

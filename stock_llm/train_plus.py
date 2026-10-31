@@ -201,13 +201,13 @@ class Anchor:
     One model per target (total return, company-specific return)."""
     W_MIN = 0.1
 
-    def fit(self, s):
+    def fit(self, s, balanced=False):
         from sklearn.linear_model import LogisticRegression
         self.mu, self.sd = s.afeat.mean(0), s.afeat.std(0) + 1e-8
         z = (s.afeat - self.mu) / self.sd
         self.w = []
         for y in (s.ret > 0, s.rel > 0):
-            m = LogisticRegression(C=1.0).fit(z, y)
+            m = LogisticRegression(C=1.0, class_weight="balanced" if balanced else None).fit(z, y)
             self.w.append((np.maximum(m.coef_[0], self.W_MIN), float(m.intercept_[0])))
         return self
 
@@ -327,12 +327,13 @@ def main():
     sd = ((tr[f"ret_{a.horizon}"] - tr[f"rel_{a.horizon}"]).std(), tr[f"rel_{a.horizon}"].std())
     model = TimeLLMPlus(a.backbone, len(cols), SEQ_LEN, ci["ret_1"], a.patching, bool(a.knowledge)).to(device)
     model.use_regime_conf = a.loss == "sel_regime"
-    model.use_evidence_conf = a.loss == "sel_evidence"
+    model.use_evidence_conf = a.loss in ("sel_evidence", "sel_evidence_rel")
     params = model.trainable_parameters()
     print(f"trainable params: {sum(p.numel() for p in params):,} (LLM frozen)", flush=True)
     vol_median = float(np.median([t[-1][ci["mkt_vol_20"]] for t in tr["ts"]]))
     s_tr, s_va, s_te = [Split(d, model, a, scaler, ci, sd, rng, vol_median) for d in (tr, va, te)]
-    anchor = Anchor().fit(s_tr)
+    rel = a.loss.endswith("_rel")
+    anchor = Anchor().fit(s_tr, balanced=rel)
     for s_ in (s_tr, s_va, s_te):
         anchor.apply(s_)
     print("anchor sentiment weight (total, company):",
@@ -348,6 +349,8 @@ def main():
     steps = a.epochs * len(s_tr.week_batches(a.bs, np.random.default_rng(0)))
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=[g["lr"] for g in groups], total_steps=steps, pct_start=0.1)
     key = 0 if a.primary == "total" else 1
+    up_tr = float(np.mean(s_tr.ret > 0))
+    pos_w = torch.tensor((1 - up_tr) / up_tr, device=device) if rel else None
     y_va = (s_va.ret if a.primary == "total" else s_va.rel) > 0
     best, best_state = -1.0, None
     for ep in range(a.epochs):
@@ -356,7 +359,7 @@ def main():
         for idx in s_tr.week_batches(a.bs, rng):
             ids, am, ts, kn, y, anc, fut = s_tr.batch(idx, device)
             out = {k: v.float() for k, v in model(ids, am, ts, kn, anc, fut, regime=y["regime"]).items()}
-            loss = compute_loss(out, y, a.loss, a.coverage, dro, primary=a.primary, shrink=a.shrink)
+            loss = compute_loss(out, y, a.loss, a.coverage, dro, primary=a.primary, shrink=a.shrink, pos_weight=pos_w)
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(params, 1.0); opt.step(); sched.step()
             losses.append(loss.item())
@@ -399,7 +402,8 @@ def main():
     side_q = np.where(pt >= thr[1], 1, np.where(pt <= thr[0], -1, 0))
     sel_conf = ct >= conf_thr if not isinstance(conf_thr, str) else np.zeros(len(pt), bool)
     sel_ltt = ct >= ltt if isinstance(ltt, float) else np.zeros(len(pt), bool)
-    np.savez(f"{a.out}/pred_{tag}.npz", p=pt, p_total=pt_tot, p_company=pt_comp, anchor=at, conf=ct,
+    p_center = float(np.median(pv)) if rel else 0.0   # relative direction: "up" = above the validation median
+    np.savez(f"{a.out}/pred_{tag}.npz", p=pt, p_total=pt_tot, p_company=pt_comp, anchor=at, conf=ct, p_center=p_center,
              rel=s_te.rel, ret=s_te.ret, side_q=side_q, sel_conf=sel_conf, sel_ltt=sel_ltt,
              ticker=s_te.df["ticker"].to_numpy(), date=s_te.df["date"].to_numpy())
     print(json.dumps({k: res[k] for k in ("val", "test", "anchor_test")}, indent=1))

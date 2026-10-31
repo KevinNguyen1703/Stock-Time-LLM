@@ -38,7 +38,8 @@ def selection(z, coverage, by):
     p = z["anchor"][:, 0] if by == "anchor" else z["p_total"]
     score = z["conf"] if by == "conf" else np.abs(p - np.median(p))
     sel = score >= np.quantile(score, 1 - coverage)
-    side, r = np.sign(p[sel] - (0 if by == "conf" else np.median(p))), z["ret"][sel]
+    centre = float(z["p_center"]) if (by == "conf" and "p_center" in z.files) else (0 if by == "conf" else np.median(p))
+    side, r = np.sign(p[sel] - centre), z["ret"][sel]
     return {"n": int(sel.sum()), "win": float(np.mean((side > 0) == (r > 0)) * 100),
             "avg": float(np.mean(side * r) * 100), "auc": float(roc_auc_score(z["ret"] > 0, p))}
 
