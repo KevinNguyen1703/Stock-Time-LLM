@@ -1,0 +1,21 @@
+<section id="sota" data-transition="fade" style="background:#f5f3ee;color:#1b2536;font-family:'Be Vietnam Pro', Arial, sans-serif;padding:112px 128px 160px;display:flex;flex-direction:column;gap:28px">
+<div style="display:flex;flex-direction:column;gap:12px">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#b4561a">Chương 4 · Kết quả</p>
+<h2 style="font-size:56px;font-weight:700;line-height:1.1;color:#16233b">So sánh với 15 phương pháp tiên tiến</h2>
+</div>
+<table style="font-size:26px;color:#1b2536">
+<tr style="background:#16233b"><th style="width:34%;color:#f5f3ee">Phương pháp</th><th style="width:24%;color:#f5f3ee">Nhóm</th><th style="width:14%;color:#f5f3ee;text-align:right">AUC gộp</th><th style="width:14%;color:#f5f3ee;text-align:right">Winrate</th><th style="width:14%;color:#f5f3ee;text-align:right">Lãi/lệnh</th></tr>
+<tr style="background:#f6e3d3"><td><b>Time-LLM+FM (luận văn)</b></td><td>Tin + chuỗi + FM</td><td style="text-align:right"><b>0.561</b></td><td style="text-align:right"><b>61,1%</b></td><td style="text-align:right"><b>+1,67%</b></td></tr>
+<tr style="background:#fffdf8"><td>TimesFM 3</td><td>Nền tảng, zero-shot</td><td style="text-align:right">0.557</td><td style="text-align:right">58,7%</td><td style="text-align:right">+1,67%</td></tr>
+<tr style="background:#fffdf8"><td>Chronos-2</td><td>Nền tảng, zero-shot</td><td style="text-align:right">0.543</td><td style="text-align:right">58,8%</td><td style="text-align:right">+1,50%</td></tr>
+<tr style="background:#fffdf8"><td>TimesFM 2.5</td><td>Nền tảng, zero-shot</td><td style="text-align:right">0.529</td><td style="text-align:right">52,7%</td><td style="text-align:right">+0,62%</td></tr>
+<tr style="background:#f6e3d3"><td>Time-LLM+ (luận văn)</td><td>Tin + chuỗi</td><td style="text-align:right">0.517</td><td style="text-align:right">52,4%</td><td style="text-align:right">+0,40%</td></tr>
+<tr style="background:#fffdf8"><td>Time-LLM (gốc)</td><td>LLM, không tin</td><td style="text-align:right">0.455</td><td style="text-align:right">42,8%</td><td style="text-align:right">−0,57%</td></tr>
+<tr style="background:#fffdf8"><td>MM-TSFlib, REST-TS, iTransformer</td><td>Tin + chuỗi / số</td><td style="text-align:right">0.43–0.44</td><td style="text-align:right">44–46%</td><td style="text-align:right">âm</td></tr>
+<tr style="background:#fffdf8"><td>TaTS, PatchTST, TimeXer, TimeMixer, CALF</td><td>Tin + chuỗi / số / LLM</td><td style="text-align:right">0.38–0.41</td><td style="text-align:right">37–43%</td><td style="text-align:right">âm</td></tr>
+</table>
+<p style="font-size:24px;line-height:1.4;color:#5b6472">Cùng sự kiện, năm kiểm tra và cách chấm; mỗi phương pháp một seed với siêu tham số mặc định của tác giả. Gộp 2023–2026; nhiễu giữa các lần chạy ≈ ±0,03 AUC.</p>
+<p style="position:absolute;left:128px;bottom:64px;width:1400px;font-size:24px;color:#5b6472">[Họ và tên học viên] · Luận văn Thạc sĩ Khoa học Máy tính</p>
+<p style="position:absolute;right:128px;bottom:64px;width:200px;font-size:24px;color:#5b6472;text-align:right">19 / 24</p>
+<aside>Mọi mô hình huấn luyện trên dữ liệu này (trừ Time-LLM+) đều dưới 0,5: chúng học động lượng 2020–22 và ngoại suy vào giai đoạn đảo chiều 2023–26. Các phương pháp văn bản đã công bố (TaTS, MM-TSFlib, REST-TS) chỉ chênh ±0,03 so với backbone số, khớp với hiện tượng «text collapse». Mô hình nền tảng zero-shot mạnh nhất về số; Time-LLM+FM đứng đầu khi kết hợp TimesFM 3 với tin tức, nhưng chênh lệch gộp với TimesFM 3 nhỏ hơn nhiễu.</aside>
+</section>

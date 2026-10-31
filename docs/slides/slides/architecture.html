@@ -1,0 +1,29 @@
+<section id="architecture" data-transition="fade" style="background:#f5f3ee;color:#1b2536;font-family:'Be Vietnam Pro', Arial, sans-serif;padding:112px 128px 160px;display:flex;flex-direction:column;gap:36px">
+<div style="display:flex;flex-direction:column;gap:12px">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#b4561a">Chương 3 · Phương pháp</p>
+<h2 style="font-size:56px;font-weight:700;line-height:1.1;color:#16233b">Kiến trúc tổng thể Time-LLM+</h2>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#16233b;border-radius:16px;padding:32px 40px">
+<p style="font-size:36px;font-weight:600;color:#f3efe6;font-family:'JetBrains Mono', 'Courier New', monospace">ŷᵢ = f( Xᵢ, Nᵢ ) → hướng lợi suất 30 phiên</p>
+<p style="font-size:24px;line-height:1.4;color:#c9cfd9">Xᵢ: 60 phiên × 18 đặc trưng (giá, khối ngoại, VN-Index) · Nᵢ: tin tức đăng trước 09:00 ngày i · LLM Qwen2.5 giữ cố định, ≈23 triệu tham số huấn luyện</p>
+</div>
+<div style="display:flex;flex-direction:row;gap:20px">
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#fffdf8;border:1px solid #e2ddd2;border-radius:16px;padding:32px">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;color:#2f5d9e">TẦNG NGUỒN THÔNG TIN</p>
+<h3 style="font-size:32px;font-weight:700;color:#16233b">C1 · Prompt tin tức</h3>
+<p style="font-size:26px;line-height:1.4">Tin tức tiếng Việt qua nhánh văn bản: prompt + 8 token tri thức.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#fffdf8;border:1px solid #e2ddd2;border-radius:16px;padding:32px">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;color:#2f5d9e">TẦNG BIỂU DIỄN</p>
+<h3 style="font-size:32px;font-weight:700;color:#16233b">C2 · KASD</h3>
+<p style="font-size:26px;line-height:1.4">Phân rã phổ học được, siêu mạng theo tin, patch theo chu kỳ.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#fffdf8;border:1px solid #e2ddd2;border-radius:16px;padding:32px">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;color:#2f5d9e">TẦNG MỤC TIÊU</p>
+<h3 style="font-size:32px;font-weight:700;color:#16233b">C3 · Thích nghi chế độ</h3>
+<p style="font-size:26px;line-height:1.4">Mục tiêu trung tính, huấn luyện lại theo quý; neo theo TimesFM 3 (Time-LLM+FM).</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;width:1400px;font-size:24px;color:#5b6472">[Họ và tên học viên] · Luận văn Thạc sĩ Khoa học Máy tính</p>
+<p style="position:absolute;right:128px;bottom:64px;width:200px;font-size:24px;color:#5b6472;text-align:right">8 / 24</p>
+</section>

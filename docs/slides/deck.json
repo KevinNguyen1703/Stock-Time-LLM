@@ -1,0 +1,19 @@
+{
+  "v": 4,
+  "createdOnFiles": {"v": 1, "at": "2026-10-31T14:36:47Z"},
+  "lists": "css",
+  "title": "Time-LLM+ Thesis Defense",
+  "order": ["cover", "agenda", "problem", "objectives", "related", "timellm", "limits", "architecture", "c1-news", "c1-prompt", "c2-kasd", "c3-regime", "fm", "data", "protocol", "findings", "abl-c1", "abl-c2c3", "sota", "fm-results", "trading", "contrib", "future", "thanks"],
+  "sections": {
+    "s1": {"description": "Giới thiệu: bài toán, động lực, mục tiêu và các nghiên cứu liên quan", "start": "cover"},
+    "s2": {"description": "Tổng quan: Time-LLM và các hạn chế khi áp dụng cho cổ phiếu", "start": "timellm"},
+    "s3": {"description": "Phương pháp: Time-LLM+ với ba cải tiến và tích hợp mô hình nền tảng", "start": "architecture"},
+    "s4": {"description": "Thực nghiệm: dữ liệu, giao thức, ablation, so sánh với các phương pháp tiên tiến", "start": "data"},
+    "s5": {"description": "Kết luận: đóng góp, hạn chế và hướng phát triển", "start": "contrib"}
+  },
+  "faces": {
+    "be-vietnam-pro": {"family": "Be Vietnam Pro", "href": "https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap"},
+    "jetbrains-mono": {"family": "JetBrains Mono", "href": "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap"}
+  },
+  "designSystems": []
+}

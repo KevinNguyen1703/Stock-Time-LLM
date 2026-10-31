@@ -1,0 +1,28 @@
+<section id="abl-c1" data-transition="fade" style="background:#f5f3ee;color:#1b2536;font-family:'Be Vietnam Pro', Arial, sans-serif;padding:112px 128px 160px;display:flex;flex-direction:column;gap:36px">
+<div style="display:flex;flex-direction:column;gap:12px">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#b4561a">Chương 4 · Kết quả</p>
+<h2 style="font-size:56px;font-weight:700;line-height:1.1;color:#16233b">Ablation C1: tin tức thật vượt mọi prompt khác</h2>
+</div>
+<div style="display:flex;flex-direction:row;gap:48px;align-items:center">
+<div style="flex:1;display:flex;flex-direction:column;gap:16px">
+<table style="font-size:26px;color:#1b2536">
+<tr style="background:#16233b"><th style="width:36%;color:#f5f3ee">Prompt</th><th style="width:16%;color:#f5f3ee;text-align:right">2023</th><th style="width:16%;color:#f5f3ee;text-align:right">2024</th><th style="width:16%;color:#f5f3ee;text-align:right">2025–26</th><th style="width:16%;color:#f5f3ee;text-align:right">Gộp</th></tr>
+<tr style="background:#fffdf8"><td>Không prompt</td><td style="text-align:right">0.508</td><td style="text-align:right">0.434</td><td style="text-align:right">0.488</td><td style="text-align:right">0.501</td></tr>
+<tr style="background:#fffdf8"><td>Time-LLM gốc (thống kê)</td><td style="text-align:right">0.533</td><td style="text-align:right">0.489</td><td style="text-align:right">0.483</td><td style="text-align:right">0.489</td></tr>
+<tr style="background:#fffdf8"><td>Prompt động cũ (chỉ báo giá)</td><td style="text-align:right">0.462</td><td style="text-align:right">0.473</td><td style="text-align:right">0.507</td><td style="text-align:right">0.490</td></tr>
+<tr style="background:#f6e3d3"><td><b>Tin tức (C1)</b></td><td style="text-align:right">0.539</td><td style="text-align:right">0.572</td><td style="text-align:right">0.511</td><td style="text-align:right"><b>0.541</b></td></tr>
+<tr style="background:#fffdf8"><td>Tin tức + token tri thức</td><td style="text-align:right">0.529</td><td style="text-align:right">0.566</td><td style="text-align:right">0.513</td><td style="text-align:right">0.536</td></tr>
+<tr style="background:#fffdf8"><td>Tin xáo trộn (đối chứng)</td><td style="text-align:right">0.550</td><td style="text-align:right">0.514</td><td style="text-align:right">0.479</td><td style="text-align:right">0.508</td></tr>
+</table>
+<p style="font-size:24px;color:#5b6472">AUC hướng lợi suất 30 phiên trên tập kiểm tra; giữ C2 và C3 ở cấu hình cuối.</p>
+</div>
+<div style="width:440px;display:flex;flex-direction:column;gap:16px;background:#16233b;border-radius:16px;padding:36px">
+<p style="font-size:72px;font-weight:700;color:#e9a877">+0,05</p>
+<p style="font-size:26px;line-height:1.4;color:#c9cfd9">AUC so với prompt động cũ và prompt gốc của Time-LLM (0,541 so với 0,490 và 0,489).</p>
+<p style="font-size:26px;line-height:1.4;color:#c9cfd9">Tin thật vượt tin xáo trộn: tín hiệu đến từ nội dung tin.</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;width:1400px;font-size:24px;color:#5b6472">[Họ và tên học viên] · Luận văn Thạc sĩ Khoa học Máy tính</p>
+<p style="position:absolute;right:128px;bottom:64px;width:200px;font-size:24px;color:#5b6472;text-align:right">17 / 24</p>
+<aside>Tin xáo trộn đạt 0,550 riêng năm 2023 nhưng thua rõ ở 2024 và 2025–26; tính gộp, tin thật hơn với 100% mẫu bootstrap. Token tri thức không thêm được gì so với văn bản tin.</aside>
+</section>

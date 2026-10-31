@@ -1,0 +1,40 @@
+<section id="limits" data-transition="fade" style="background:#f5f3ee;color:#1b2536;font-family:'Be Vietnam Pro', Arial, sans-serif;padding:112px 128px 160px;display:flex;flex-direction:column;gap:32px">
+<div style="display:flex;flex-direction:column;gap:12px">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#b4561a">Chương 2 · Tổng quan</p>
+<h2 style="font-size:56px;font-weight:700;line-height:1.1;color:#16233b">Ba hạn chế của Time-LLM và ba cải tiến tương ứng</h2>
+</div>
+<div style="display:grid;grid-template-columns:1fr 64px 1.25fr;gap:16px 24px;align-items:center">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;color:#5b6472">TIME-LLM GỐC</p>
+<div></div>
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;color:#b4561a">ĐỀ XUẤT CỦA LUẬN VĂN</p>
+<div style="display:flex;flex-direction:column;gap:8px;background:#fffdf8;border:1px solid #e2ddd2;border-radius:16px;padding:24px">
+<h3 style="font-size:30px;font-weight:700;color:#16233b">Prompt tĩnh</h3>
+<p style="font-size:26px;line-height:1.4;color:#5b6472">Chỉ lặp lại thống kê của chuỗi giá; không đưa thông tin mới.</p>
+</div>
+<x-shape kind="arrow-right" style="width:56px;height:28px;background:#5b6472"></x-shape>
+<div style="display:flex;flex-direction:column;gap:8px;background:#16233b;border-radius:16px;padding:24px">
+<h3 style="font-size:30px;font-weight:700;color:#f3efe6">C1 · Prompt tin tức theo sự kiện</h3>
+<p style="font-size:26px;line-height:1.4;color:#c9cfd9">LLM đọc tin trước giờ mở cửa (loại sự kiện, cảm xúc, độ trễ) qua prompt và token tri thức.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;background:#fffdf8;border:1px solid #e2ddd2;border-radius:16px;padding:24px">
+<h3 style="font-size:30px;font-weight:700;color:#16233b">Patch cố định</h3>
+<p style="font-size:26px;line-height:1.4;color:#5b6472">Một độ dài patch chọn tay cho mọi mẫu.</p>
+</div>
+<x-shape kind="arrow-right" style="width:56px;height:28px;background:#5b6472"></x-shape>
+<div style="display:flex;flex-direction:column;gap:8px;background:#16233b;border-radius:16px;padding:24px">
+<h3 style="font-size:30px;font-weight:700;color:#f3efe6">C2 · Phân rã phổ thích ứng theo tin (KASD)</h3>
+<p style="font-size:26px;line-height:1.4;color:#c9cfd9">Bộ lọc dải tần học được; siêu mạng đọc tin để dịch chuyển dải tần cho từng mẫu.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;background:#fffdf8;border:1px solid #e2ddd2;border-radius:16px;padding:24px">
+<h3 style="font-size:30px;font-weight:700;color:#16233b">MSE, huấn luyện một lần</h3>
+<p style="font-size:26px;line-height:1.4;color:#5b6472">Học chế độ thị trường của năm huấn luyện rồi dùng mãi.</p>
+</div>
+<x-shape kind="arrow-right" style="width:56px;height:28px;background:#5b6472"></x-shape>
+<div style="display:flex;flex-direction:column;gap:8px;background:#16233b;border-radius:16px;padding:24px">
+<h3 style="font-size:30px;font-weight:700;color:#f3efe6">C3 · Thích nghi với chế độ thị trường</h3>
+<p style="font-size:26px;line-height:1.4;color:#c9cfd9">Mục tiêu trung tính theo chế độ, huấn luyện lại theo quý; tích hợp mô hình nền tảng (Time-LLM+FM).</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;width:1400px;font-size:24px;color:#5b6472">[Họ và tên học viên] · Luận văn Thạc sĩ Khoa học Máy tính</p>
+<p style="position:absolute;right:128px;bottom:64px;width:200px;font-size:24px;color:#5b6472;text-align:right">7 / 24</p>
+</section>

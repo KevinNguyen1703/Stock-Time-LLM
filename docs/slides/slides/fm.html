@@ -1,0 +1,26 @@
+<section id="fm" data-transition="fade" style="background:#f5f3ee;color:#1b2536;font-family:'Be Vietnam Pro', Arial, sans-serif;padding:112px 128px 160px;display:flex;flex-direction:column;gap:32px">
+<div style="display:flex;flex-direction:column;gap:12px">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#b4561a">Chương 3 · Tích hợp mô hình nền tảng</p>
+<h2 style="font-size:56px;font-weight:700;line-height:1.1;color:#16233b">Time-LLM+FM: kết hợp TimesFM 3 với tin tức</h2>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#16233b;border-radius:16px;padding:32px 40px">
+<p style="font-size:34px;font-weight:600;color:#f3efe6;font-family:'JetBrains Mono', 'Courier New', monospace">điểm = s·[ z(TimesFM 3) + z(cảm xúc tin) ] + b + Δ</p>
+<p style="font-size:24px;line-height:1.4;color:#c9cfd9">z: chuẩn hoá bằng thống kê tập huấn luyện · Δ: hiệu chỉnh Time-LLM+ (C1 + C2), bị co về 0</p>
+</div>
+<div style="display:flex;flex-direction:row;gap:20px">
+<div style="flex:1;display:flex;flex-direction:column;gap:10px;background:#fffdf8;border:1px solid #e2ddd2;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:700;color:#16233b">Hai nguồn bổ trợ</h3>
+<p style="font-size:26px;line-height:1.4">TimesFM 3 đọc giá, LLM đọc tin; tương quan chỉ 0,06 (2023) và 0,14 (2024).</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:10px;background:#fffdf8;border:1px solid #e2ddd2;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:700;color:#16233b">Trọng số bằng nhau</h3>
+<p style="font-size:26px;line-height:1.4">Chỉ học thang đo s và hệ số chặn b, nên trọng số không bị khớp theo chế độ 2020–22.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:10px;background:#fffdf8;border:1px solid #e2ddd2;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:700;color:#16233b">Nhân quả, thiết kế trên 2023–24</h3>
+<p style="font-size:26px;line-height:1.4">TimesFM 3 zero-shot chỉ thấy giá quá khứ; Chronos-2 bị loại vì làm giảm AUC trong cả hai năm phát triển.</p>
+</div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;width:1400px;font-size:24px;color:#5b6472">[Họ và tên học viên] · Luận văn Thạc sĩ Khoa học Máy tính</p>
+<p style="position:absolute;right:128px;bottom:64px;width:200px;font-size:24px;color:#5b6472;text-align:right">13 / 24</p>
+</section>

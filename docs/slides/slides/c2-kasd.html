@@ -1,0 +1,27 @@
+<section id="c2-kasd" data-transition="fade" style="background:#f5f3ee;color:#1b2536;font-family:'Be Vietnam Pro', Arial, sans-serif;padding:112px 128px 160px;display:flex;flex-direction:column;gap:32px">
+<div style="display:flex;flex-direction:column;gap:12px">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#b4561a">Chương 3 · Cải tiến 2</p>
+<h2 style="font-size:56px;font-weight:700;line-height:1.1;color:#16233b">Phân rã phổ thích ứng theo tin (KASD)</h2>
+</div>
+<div style="display:flex;flex-direction:row;gap:20px">
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#fffdf8;border:1px solid #e2ddd2;border-radius:16px;padding:32px">
+<h3 style="font-size:30px;font-weight:700;color:#16233b">1. Bộ lọc dải tần học được</h3>
+<p style="font-size:26px;color:#2f5d9e;font-family:'JetBrains Mono', 'Courier New', monospace">Gₖ(f) = exp(−(f−μₖ)²/2σₖ²)</p>
+<p style="font-size:26px;color:#2f5d9e;font-family:'JetBrains Mono', 'Courier New', monospace">xₖ = IFFT(FFT(x)·Gₖ)</p>
+<p style="font-size:26px;line-height:1.4">5 dải, khởi tạo tại chu kỳ 48 / 20 / 10 / 5 / 2,5 phiên; tâm μₖ và độ rộng σₖ được học.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#fffdf8;border:1px solid #e2ddd2;border-radius:16px;padding:32px">
+<h3 style="font-size:30px;font-weight:700;color:#16233b">2. Siêu mạng đọc tin</h3>
+<p style="font-size:26px;color:#2f5d9e;font-family:'JetBrains Mono', 'Courier New', monospace">(Δμₖ, Δσₖ) = h(tin, thị trường)</p>
+<p style="font-size:26px;line-height:1.4">Tin tức quyết định thành phần nào được trích xuất, không chỉ trọng số. Có tiên nghiệm theo loại sự kiện và giám sát bằng phổ phản ứng giá sau sự kiện.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#fffdf8;border:1px solid #e2ddd2;border-radius:16px;padding:32px">
+<h3 style="font-size:30px;font-weight:700;color:#16233b">3. Patch theo chu kỳ</h3>
+<p style="font-size:26px;color:#2f5d9e;font-family:'JetBrains Mono', 'Courier New', monospace">Lₖ = 1 / μₖ</p>
+<p style="font-size:26px;line-height:1.4">Mỗi patch dài đúng một chu kỳ của dải; lấy mẫu lại khả vi nên độ dài patch nhận gradient. Phiên bản học được của ý tưởng FFT patch trước đây.</p>
+</div>
+</div>
+<p style="font-size:26px;line-height:1.4;color:#5b6472">Kiểm tra dữ liệu: phổ phản ứng sau sự kiện gần như giống nhau giữa các loại tin (chu kỳ trội ≈ 3,7 phiên cho mọi loại), nên mức dịch chuyển học được nhỏ.</p>
+<p style="position:absolute;left:128px;bottom:64px;width:1400px;font-size:24px;color:#5b6472">[Họ và tên học viên] · Luận văn Thạc sĩ Khoa học Máy tính</p>
+<p style="position:absolute;right:128px;bottom:64px;width:200px;font-size:24px;color:#5b6472;text-align:right">11 / 24</p>
+</section>
