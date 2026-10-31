@@ -1,0 +1,106 @@
+diff --git a/models/PatchTST.py b/models/PatchTST.py
+index 085efd8..c7672d9 100644
+--- a/models/PatchTST.py
++++ b/models/PatchTST.py
+@@ -85,7 +85,7 @@ class Model(nn.Module):
+         x_enc = x_enc - means
+         stdev = torch.sqrt(
+             torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
+-        x_enc /= stdev
++        x_enc = x_enc / stdev
+ 
+         # do patching and embedding
+         x_enc = x_enc.permute(0, 2, 1)
+@@ -121,7 +121,7 @@ class Model(nn.Module):
+         stdev = torch.sqrt(torch.sum(x_enc * x_enc, dim=1) /
+                            torch.sum(mask == 1, dim=1) + 1e-5)
+         stdev = stdev.unsqueeze(1).detach()
+-        x_enc /= stdev
++        x_enc = x_enc / stdev
+ 
+         # do patching and embedding
+         x_enc = x_enc.permute(0, 2, 1)
+@@ -154,7 +154,7 @@ class Model(nn.Module):
+         x_enc = x_enc - means
+         stdev = torch.sqrt(
+             torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
+-        x_enc /= stdev
++        x_enc = x_enc / stdev
+ 
+         # do patching and embedding
+         x_enc = x_enc.permute(0, 2, 1)
+@@ -187,7 +187,7 @@ class Model(nn.Module):
+         x_enc = x_enc - means
+         stdev = torch.sqrt(
+             torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
+-        x_enc /= stdev
++        x_enc = x_enc / stdev
+ 
+         # do patching and embedding
+         x_enc = x_enc.permute(0, 2, 1)
+diff --git a/models/TimeMixer.py b/models/TimeMixer.py
+index b6b2989..91dc0ce 100755
+--- a/models/TimeMixer.py
++++ b/models/TimeMixer.py
+@@ -458,7 +458,7 @@ class Model(nn.Module):
+         stdev = torch.sqrt(torch.sum(x_enc * x_enc, dim=1) /
+                            torch.sum(mask == 1, dim=1) + 1e-5)
+         stdev = stdev.unsqueeze(1).detach()
+-        x_enc /= stdev
++        x_enc = x_enc / stdev
+ 
+         B, T, N = x_enc.size()
+         x_enc, x_mark_enc = self.__multi_scale_process_inputs(x_enc, x_mark_enc)
+diff --git a/models/TimeXer.py b/models/TimeXer.py
+index c8026b7..c3da7dd 100644
+--- a/models/TimeXer.py
++++ b/models/TimeXer.py
+@@ -160,7 +160,7 @@ class Model(nn.Module):
+             means = x_enc.mean(1, keepdim=True).detach()
+             x_enc = x_enc - means
+             stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
+-            x_enc /= stdev
++            x_enc = x_enc / stdev
+ 
+         _, _, N = x_enc.shape
+ 
+@@ -190,7 +190,7 @@ class Model(nn.Module):
+             means = x_enc.mean(1, keepdim=True).detach()
+             x_enc = x_enc - means
+             stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
+-            x_enc /= stdev
++            x_enc = x_enc / stdev
+ 
+         _, _, N = x_enc.shape
+ 
+diff --git a/models/iTransformer.py b/models/iTransformer.py
+index 4833a69..db544d6 100644
+--- a/models/iTransformer.py
++++ b/models/iTransformer.py
+@@ -52,7 +52,7 @@ class Model(nn.Module):
+         means = x_enc.mean(1, keepdim=True).detach()
+         x_enc = x_enc - means
+         stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
+-        x_enc /= stdev
++        x_enc = x_enc / stdev
+ 
+         _, _, N = x_enc.shape
+ 
+@@ -71,7 +71,7 @@ class Model(nn.Module):
+         means = x_enc.mean(1, keepdim=True).detach()
+         x_enc = x_enc - means
+         stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
+-        x_enc /= stdev
++        x_enc = x_enc / stdev
+ 
+         _, L, N = x_enc.shape
+ 
+@@ -90,7 +90,7 @@ class Model(nn.Module):
+         means = x_enc.mean(1, keepdim=True).detach()
+         x_enc = x_enc - means
+         stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
+-        x_enc /= stdev
++        x_enc = x_enc / stdev
+ 
+         _, L, N = x_enc.shape
+ 

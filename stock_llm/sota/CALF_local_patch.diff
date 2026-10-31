@@ -1,0 +1,13 @@
+diff --git a/models/CALF.py b/models/CALF.py
+index 55378bb..8e4e7a5 100644
+--- a/models/CALF.py
++++ b/models/CALF.py
+@@ -1,7 +1,7 @@
+ import torch
+ import torch.nn as nn
+ from einops import rearrange
+-from peft import LoraConfig, TaskType
++from peft import LoraConfig, TaskType, get_peft_model
+ from models.GPT2_arch import AccustumGPT2Model
+ 
+ class Encoder_PCA(nn.Module):

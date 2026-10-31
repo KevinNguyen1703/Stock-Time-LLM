@@ -9,7 +9,7 @@ DIR=Gumiho/Stock-Time-LLM
 cd "$(dirname "$0")/.."
 case "$1" in
   sync)
-    rsync -az --exclude .venv --exclude checkpoints --exclude logs --exclude reports --exclude .git \
+    rsync -az --exclude .venv --exclude .venv-calf --exclude checkpoints --exclude logs --exclude reports --exclude .git \
       --exclude '*.zip' --exclude dataset --exclude report ./ "$HOST:$DIR/" ;;
   run)
     name=$2; shift 2

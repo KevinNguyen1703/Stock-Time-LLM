@@ -1,5 +1,7 @@
-"""Run a list of train_plus jobs split between this machine and the ssh host "gpu2" (if reachable).
-Each job is a name plus train_plus arguments; finished jobs (log contains the final JSON) are skipped.
+"""Run a list of jobs split between this machine and the ssh host "gpu2" (if reachable).
+A job is (name, args) for stock_llm.train_plus, or (name, args, opts) with opts keys:
+  module (default "stock_llm.train_plus"), python (default ".venv/bin/python"), local_only (default False).
+Finished jobs (log contains the final JSON with "auc_total") are skipped.
 Usage (from code): run_jobs([("name", ["--fold", "0", ...]), ...])"""
 import os
 import subprocess
@@ -14,7 +16,12 @@ def reachable():
 
 def done(name):
     log = f"logs/runs/{name}.log"
-    return os.path.exists(log) and '"anchor_test"' in open(log, errors="ignore").read()
+    return os.path.exists(log) and '"auc_total"' in open(log, errors="ignore").read()
+
+
+def _opts(job):
+    o = job[2] if len(job) > 2 else {}
+    return o.get("module", "stock_llm.train_plus"), o.get("python", ".venv/bin/python"), o.get("local_only", False)
 
 
 def _worker(label, jobs, lock, remote, out_dirs):
@@ -30,29 +37,32 @@ def _worker(label, jobs, lock, remote, out_dirs):
             if not synced:
                 synced = subprocess.run(["bash", "stock_llm/remote.sh", "sync"]).returncode == 0
         with lock:
-            if not jobs:
+            pick = next((j for j in jobs if not (remote and _opts(j)[2])), None)
+            if pick is None:
                 return
-            name, args = jobs.pop(0)
+            jobs.remove(pick)
+        name, args = pick[0], pick[1]
+        module, python, _ = _opts(pick)
         log, t0 = f"logs/runs/{name}.log", time.time()
         if remote:
             r = subprocess.run(["ssh", "gpu2", "cd Gumiho/Stock-Time-LLM && mkdir -p logs/runs && "
-                                f".venv/bin/python -m stock_llm.train_plus {' '.join(args)} > {log} 2>&1"])
+                                f"{python} -m {module} {' '.join(args)} > {log} 2>&1"])
             if r.returncode != 0:
                 with lock:
-                    jobs.append((name, args))
+                    jobs.append(pick)
                 continue
             for d in out_dirs:
                 subprocess.run(["rsync", "-az", f"gpu2:Gumiho/Stock-Time-LLM/{d}/", f"{d}/"])
             subprocess.run(["rsync", "-az", f"gpu2:Gumiho/Stock-Time-LLM/{log}", log])
         else:
             with open(log, "w") as f:
-                subprocess.run([".venv/bin/python", "-m", "stock_llm.train_plus", *args], stdout=f, stderr=f)
+                subprocess.run([python, "-m", module, *args], stdout=f, stderr=f)
         print(f"[{label}] {name} done in {time.time()-t0:.0f}s", flush=True)
 
 
 def run_jobs(jobs, use_gpu2=True):
     os.makedirs("logs/runs", exist_ok=True)
-    out_dirs = sorted({a[a.index("--out") + 1] for _, a in jobs if "--out" in a})
+    out_dirs = sorted({j[1][j[1].index("--out") + 1] for j in jobs if "--out" in j[1]})
     for d in out_dirs:
         os.makedirs(d, exist_ok=True)
     jobs = [j for j in jobs if not done(j[0])]

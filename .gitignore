@@ -11,3 +11,5 @@ logs/
 checkpoints/
 data_raw/
 /data/
+/third_party/
+.venv-calf/
