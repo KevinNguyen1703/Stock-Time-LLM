@@ -69,6 +69,7 @@
     <li><b>C2, news-conditioned spectral filter bank:</b> <span class="warn">partially holds up.</span> It is the best patching variant (0.550) and beats our earlier FFT+attention patching (0.528). Period-aligned patching does not help, and post-event time scales barely differ by event type.</li>
     <li><b>C3, regime handling:</b> <span class="bad">no learned mechanism is robust</span>, because market relationships flipped sign around 2023. <span class="good">Walk-forward retraining of a regime-neutral model is the robust fix:</span> <b>57.3% winrate, +1.23% per trade</b> out of sample (2025–26).</li>
     <li>The 60% winrate target was reached on the development years (61.9% / 62.3%), <b>not</b> out of sample.</li>
+    <li><b>Against 15 state-of-the-art methods:</b> Time-LLM+ is the best model trained on our data (pooled AUC 0.517, vs 0.455 for the original Time-LLM and at most 0.441 for PatchTST, iTransformer, TimeMixer, TimeXer, CALF, TaTS, MM-TSFlib and REST-TS). Zero-shot foundation models are stronger still: TimesFM 3 (0.557, 58.7% win) and Chronos-2 (0.543).</li>
   </ul>
 </div>
 
@@ -81,6 +82,7 @@
     <li><a href="#method">Our method: Time-LLM+</a></li>
     <li><a href="#results">Results</a></li>
     <li><a href="#ablation">Ablation study</a></li>
+    <li><a href="#sota">Comparison with state-of-the-art methods</a></li>
     <li><a href="#c3">C3: why regime mechanisms fail</a></li>
     <li><a href="#limits">Limitations and next steps</a></li>
     <li><a href="#repro">Reproducing the results</a></li>
@@ -247,6 +249,47 @@ Will MBB rise above today's opening price after 30 trading days?</div>
 <p><span class="badge bad">Original C3 not supported</span> Decomposition and Group DRO hurt; plain MSE ranks events as well or better. This motivated the C3 redesign in §8.</p>
 
 <!-- ============================================================ -->
+<h2 id="sota">7b. Comparison with state-of-the-art methods</h2>
+<p>We ran 16 methods on the same events, test years, scaling and causal news alignment, with identical scoring: AUC on the 30-day direction, and trades in the top/bottom 10% of scores with thresholds set on validation. Each method uses one seed and its own default hyperparameters; nothing was tuned for this comparison, including ours. Code: <code>stock_llm/sota/</code>.</p>
+<div class="scroll"><table>
+<tr><th>Method</th><th>Family</th><th class="num">AUC 2023</th><th class="num">AUC 2024</th><th class="num">AUC 2025–26</th><th class="num">AUC pooled</th><th class="num">Trades</th><th class="num">Win pooled</th><th class="num">Avg / trade</th></tr>
+<tr><td>TimesFM 3 (zero-shot)</td><td>foundation</td><td class="num">0.515</td><td class="num">0.540</td><td class="num">0.583</td><td class="num"><b>0.557</b></td><td class="num">854</td><td class="num"><b>58.7%</b></td><td class="num"><b>+1.67%</b></td></tr>
+<tr><td>Chronos-2 (zero-shot)</td><td>foundation</td><td class="num">0.482</td><td class="num">0.510</td><td class="num">0.592</td><td class="num">0.543</td><td class="num">888</td><td class="num">58.8%</td><td class="num">+1.50%</td></tr>
+<tr><td>TimesFM 2.5 (zero-shot)</td><td>foundation</td><td class="num">0.460</td><td class="num">0.484</td><td class="num">0.577</td><td class="num">0.529</td><td class="num">1183</td><td class="num">52.7%</td><td class="num">+0.62%</td></tr>
+<tr class="hl"><td>Time-LLM+ (ours, fitted once)</td><td>text + series</td><td class="num">0.507</td><td class="num">0.473</td><td class="num">0.539</td><td class="num">0.517</td><td class="num">763</td><td class="num">52.4%</td><td class="num">+0.40%</td></tr>
+<tr><td>Time-LLM (original design)</td><td>LLM, no text</td><td class="num">0.358</td><td class="num">0.423</td><td class="num">0.485</td><td class="num">0.455</td><td class="num">825</td><td class="num">42.8%</td><td class="num">−0.57%</td></tr>
+<tr><td>MM-TSFlib + iTransformer</td><td>text + series</td><td class="num">0.408</td><td class="num">0.478</td><td class="num">0.433</td><td class="num">0.441</td><td class="num">1068</td><td class="num">45.6%</td><td class="num">−0.65%</td></tr>
+<tr><td>iTransformer</td><td>numeric</td><td class="num">0.413</td><td class="num">0.482</td><td class="num">0.415</td><td class="num">0.435</td><td class="num">1112</td><td class="num">44.5%</td><td class="num">−0.86%</td></tr>
+<tr><td>REST-TS + iTransformer</td><td>text + series</td><td class="num">0.412</td><td class="num">0.483</td><td class="num">0.415</td><td class="num">0.434</td><td class="num">1099</td><td class="num">45.0%</td><td class="num">−0.81%</td></tr>
+<tr><td>TaTS + PatchTST</td><td>text + series</td><td class="num">0.345</td><td class="num">0.421</td><td class="num">0.427</td><td class="num">0.408</td><td class="num">967</td><td class="num">41.0%</td><td class="num">−1.14%</td></tr>
+<tr><td>TaTS + iTransformer</td><td>text + series</td><td class="num">0.333</td><td class="num">0.470</td><td class="num">0.389</td><td class="num">0.400</td><td class="num">1062</td><td class="num">40.3%</td><td class="num">−1.47%</td></tr>
+<tr><td>TimeXer</td><td>numeric</td><td class="num">0.348</td><td class="num">0.461</td><td class="num">0.384</td><td class="num">0.399</td><td class="num">1195</td><td class="num">42.5%</td><td class="num">−1.16%</td></tr>
+<tr><td>REST-TS + PatchTST</td><td>text + series</td><td class="num">0.327</td><td class="num">0.436</td><td class="num">0.406</td><td class="num">0.397</td><td class="num">930</td><td class="num">37.3%</td><td class="num">−1.89%</td></tr>
+<tr><td>PatchTST</td><td>numeric</td><td class="num">0.329</td><td class="num">0.434</td><td class="num">0.400</td><td class="num">0.394</td><td class="num">912</td><td class="num">38.5%</td><td class="num">−1.74%</td></tr>
+<tr><td>MM-TSFlib + PatchTST</td><td>text + series</td><td class="num">0.315</td><td class="num">0.436</td><td class="num">0.399</td><td class="num">0.391</td><td class="num">952</td><td class="num">37.5%</td><td class="num">−1.78%</td></tr>
+<tr><td>TimeMixer</td><td>numeric</td><td class="num">0.336</td><td class="num">0.434</td><td class="num">0.378</td><td class="num">0.386</td><td class="num">1098</td><td class="num">38.1%</td><td class="num">−1.89%</td></tr>
+<tr><td>CALF</td><td>LLM, no text</td><td class="num">0.323</td><td class="num">0.436</td><td class="num">0.380</td><td class="num">0.382</td><td class="num">1144</td><td class="num">39.9%</td><td class="num">−1.62%</td></tr>
+</table></div>
+<p class="note">Floors (majority direction): 57.3% (2023), 58.6% (2024), 52.1% (2025–26). Re-running the same configuration on the second GPU changed AUC by up to ≈0.03, so differences smaller than that are noise. Time-LLM+ walk-forward on 2025–26: 57.3% win, +1.23% per trade (§6).</p>
+<h3>How each method was run</h3>
+<ul>
+  <li><b>Numeric:</b> Time-Series-Library reference code (commit <code>4e938a1</code>) with TSLib's default hyperparameters; TimeMixer uses its own script settings.</li>
+  <li><b>Zero-shot foundation models:</b> official packages (Chronos-2, TimesFM 3, TimesFM 2.5), 256 days of log-price history plus past covariates, no training on our data.</li>
+  <li><b>TaTS</b> (ICLR 2026, commit <code>a053503</code>) and <b>MM-TSFlib</b> (NeurIPS 2024, commit <code>e789ce7</code>): their text-fusion mechanisms with repository defaults, fed the same Vietnamese news embeddings (BGE-M3). TaTS's Time-MMD-specific "prior" column does not exist for this data and is not used.</li>
+  <li><b>REST-TS</b> (arXiv 2606.19413) has no public code; it is re-implemented from the paper.</li>
+  <li><b>CALF</b> (commit <code>50e7270</code>) uses its own model and loss in an environment with its pinned library versions.</li>
+  <li><b>Time-LLM</b>: re-implemented in our framework (statistics prompt, fixed patches, MSE).</li>
+  <li><b>Patches to cloned code</b>, all behaviour-preserving and recorded in <code>stock_llm/sota/*_local_patch.diff</code>: TSLib's in-place normalisation made out-of-place; CALF's missing <code>get_peft_model</code> import added.</li>
+</ul>
+<h3>What the comparison shows</h3>
+<ul>
+  <li><span class="badge bad">Trained forecasters are anti-predictive</span> Every model trained on our data, apart from Time-LLM+, scores a pooled AUC of 0.38–0.46: PatchTST, iTransformer, TimeMixer, TimeXer, CALF and the original Time-LLM. They learn the 2020–22 momentum and extrapolate it into the 2023–26 reversal regime (§8).</li>
+  <li><span class="badge bad">Published text fusion does not fix this</span> TaTS, MM-TSFlib and REST-TS stay within ±0.03 of their numeric backbones (0.39–0.44). This agrees with the 2026 "text collapse" and "Semantics or Structure?" findings: the text branch adds little once the numeric backbone dominates.</li>
+  <li><span class="badge good">Time-LLM+ is the best model trained on our data</span> Pooled AUC 0.517, versus 0.455 for the original Time-LLM and at most 0.441 for every trained competitor. It is the only trained model above 0.5 in two of three years.</li>
+  <li><span class="badge warn">Zero-shot foundation models are stronger</span> TimesFM 3 (0.557, 58.7% win, +1.67% per trade) and Chronos-2 (0.543) beat everything trained here, mainly through 2025–26 (0.58–0.59). Pre-training on large, diverse corpora avoids fitting this market's regime. A natural next step is to use a foundation-model forecast as the numeric backbone or anchor inside Time-LLM+, combining its robustness with the news signal from C1.</li>
+</ul>
+
+<!-- ============================================================ -->
 <h2 id="c3">8. C3: why learned regime mechanisms fail</h2>
 <h3>Every C3 mechanism tested</h3>
 <div class="scroll"><table>
@@ -288,6 +331,7 @@ Will MBB rise above today's opening price after 30 trading days?</div>
 <tr><td>Train one model</td><td><code>python -m stock_llm.train_plus --fold 2 --prompt news --knowledge 1 --patching bank_text --loss mse</code></td></tr>
 <tr><td>Ablation grid (two machines)</td><td><code>python -m stock_llm.ablations</code>; table: <code>python -m stock_llm.analysis.summarize_ablation</code></td></tr>
 <tr><td>Walk-forward</td><td><code>python -m stock_llm.walk_forward_c3</code></td></tr>
+<tr><td>SOTA comparison (both machines)</td><td><code>python -m stock_llm.sota.compare</code> (table: <code>--run 0</code>)</td></tr>
 <tr><td>C3 experiments</td><td><code>python -m stock_llm.c3_search</code>, <code>python -m stock_llm.run_regime_adapt</code></td></tr>
 <tr><td>Backtest</td><td><code>python -m stock_llm.backtest_plus --pattern "reports/.../pred_*.npz"</code></td></tr>
 </table></div>

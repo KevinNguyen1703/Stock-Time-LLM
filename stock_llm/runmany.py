@@ -52,8 +52,8 @@ def _worker(label, jobs, lock, remote, out_dirs):
                     jobs.append(pick)
                 continue
             for d in out_dirs:
-                subprocess.run(["rsync", "-az", f"gpu2:Gumiho/Stock-Time-LLM/{d}/", f"{d}/"])
-            subprocess.run(["rsync", "-az", f"gpu2:Gumiho/Stock-Time-LLM/{log}", log])
+                subprocess.run(["rsync", "-azu", f"gpu2:Gumiho/Stock-Time-LLM/{d}/", f"{d}/"])
+            subprocess.run(["rsync", "-azu", f"gpu2:Gumiho/Stock-Time-LLM/{log}", log])
         else:
             with open(log, "w") as f:
                 subprocess.run([python, "-m", module, *args], stdout=f, stderr=f)
@@ -62,7 +62,8 @@ def _worker(label, jobs, lock, remote, out_dirs):
 
 def run_jobs(jobs, use_gpu2=True):
     os.makedirs("logs/runs", exist_ok=True)
-    out_dirs = sorted({j[1][j[1].index("--out") + 1] for j in jobs if "--out" in j[1]})
+    # output dirs to pull back from gpu2; jobs without --out write to their module's default (reports/sota)
+    out_dirs = sorted({j[1][j[1].index("--out") + 1] if "--out" in j[1] else "reports/sota" for j in jobs})
     for d in out_dirs:
         os.makedirs(d, exist_ok=True)
     jobs = [j for j in jobs if not done(j[0])]
