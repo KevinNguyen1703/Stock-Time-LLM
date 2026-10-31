@@ -29,8 +29,9 @@ GROUP = {"patchtst": "numeric", "itransformer": "numeric", "timemixer": "numeric
          "tats_itransformer": "text + series", "tats_patchtst": "text + series",
          "mmtsf_itransformer": "text + series", "mmtsf_patchtst": "text + series",
          "restts_itransformer": "text + series", "restts_patchtst": "text + series",
-         "timellm_plus": "ours (text + series)"}
-SOURCES = {"timellm_plus": "reports/c3/mse", "timellm": "reports/sota/timellm"}
+         "timellm_plus": "ours (text + series)", "timellm_plus_fm": "ours (text + series + FM)"}
+SOURCES = {"timellm_plus": "reports/c3/mse", "timellm": "reports/sota/timellm",
+           "timellm_plus_fm": "reports/fm_v2/news"}
 
 
 def jobs(include_calf):

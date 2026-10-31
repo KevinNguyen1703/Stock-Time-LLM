@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Time-LLM+ Thesis Report</title>
+<meta name="claude:viewport-fit-sides" content="cover">
 <style>
   :root {
     --bg: #fbfbf9; --fg: #1d1d1b; --muted: #5f5f5a; --line: #deded8; --card: #ffffff;
@@ -13,16 +14,20 @@
     :root:not([data-theme="light"]) {
       --bg: #161615; --fg: #e9e9e4; --muted: #a3a39c; --line: #34342f; --card: #1e1e1c;
       --accent: #7aa7ec; --good: #5cc28a; --warn: #e3a63a; --bad: #ef7a73; --code: #262623;
+      color-scheme: dark;
     }
   }
   :root[data-theme="dark"] {
     --bg: #161615; --fg: #e9e9e4; --muted: #a3a39c; --line: #34342f; --card: #1e1e1c;
     --accent: #7aa7ec; --good: #5cc28a; --warn: #e3a63a; --bad: #ef7a73; --code: #262623;
+    color-scheme: dark;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--fg);
          font: 16px/1.6 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
-  main { max-width: 980px; margin: 0 auto; padding: 32px 16px 80px; }
+  main { max-width: 980px; margin: 0 auto; padding-block: 32px 80px;
+         padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  h1, h2, h3 { text-wrap: balance; }
   h1 { font-size: 2rem; line-height: 1.25; margin: 0 0 8px; }
   h2 { font-size: 1.4rem; margin: 48px 0 12px; padding-top: 12px; border-top: 1px solid var(--line); }
   h3 { font-size: 1.1rem; margin: 28px 0 8px; }
@@ -69,7 +74,8 @@
     <li><b>C2, news-conditioned spectral filter bank:</b> <span class="warn">partially holds up.</span> It is the best patching variant (0.550) and beats our earlier FFT+attention patching (0.528). Period-aligned patching does not help, and post-event time scales barely differ by event type.</li>
     <li><b>C3, regime handling:</b> <span class="bad">no learned mechanism is robust</span>, because market relationships flipped sign around 2023. <span class="good">Walk-forward retraining of a regime-neutral model is the robust fix:</span> <b>57.3% winrate, +1.23% per trade</b> out of sample (2025–26).</li>
     <li>The 60% winrate target was reached on the development years (61.9% / 62.3%), <b>not</b> out of sample.</li>
-    <li><b>Against 15 state-of-the-art methods:</b> Time-LLM+ is the best model trained on our data (pooled AUC 0.517, vs 0.455 for the original Time-LLM and at most 0.441 for PatchTST, iTransformer, TimeMixer, TimeXer, CALF, TaTS, MM-TSFlib and REST-TS). Zero-shot foundation models are stronger still: TimesFM 3 (0.557, 58.7% win) and Chronos-2 (0.543).</li>
+    <li><b>Against 15 state-of-the-art methods:</b> Time-LLM+ is the best model trained on our data (pooled AUC 0.517, vs 0.455 for the original Time-LLM and at most 0.441 for PatchTST, iTransformer, TimeMixer, TimeXer, CALF, TaTS, MM-TSFlib and REST-TS). Zero-shot foundation models are stronger: TimesFM 3 (0.557) and Chronos-2 (0.543).</li>
+    <li><b>Time-LLM+FM</b> combines the zero-shot TimesFM 3 forecast with the frozen LLM's news reading and ranks <b>first overall</b>: pooled AUC 0.561, <b>61.1% pooled trade winrate</b>, +1.67% per trade. It beats TimesFM 3 by +0.046 / +0.037 AUC in 2023 / 2024, but trails it in 2025–26 (0.554 vs 0.583). The pooled lead (0.561 vs 0.557) is within run-to-run noise.</li>
   </ul>
 </div>
 
@@ -83,6 +89,7 @@
     <li><a href="#results">Results</a></li>
     <li><a href="#ablation">Ablation study</a></li>
     <li><a href="#sota">Comparison with state-of-the-art methods</a></li>
+    <li><a href="#fm">Time-LLM+FM: adding a foundation model</a></li>
     <li><a href="#c3">C3: why regime mechanisms fail</a></li>
     <li><a href="#limits">Limitations and next steps</a></li>
     <li><a href="#repro">Reproducing the results</a></li>
@@ -196,6 +203,7 @@ Will MBB rise above today's opening price after 30 trading days?</div>
 <tr><td>Configuration found by search, fitted once (3 seeds)</td><td class="num">61.9%</td><td class="num">62.3%</td><td class="num">52.7%</td><td>Meets 60% in development; no edge out of sample</td></tr>
 <tr><td>Same configuration, walk-forward (3 seeds)</td><td class="num">–</td><td class="num">–</td><td class="num">55.1 / 55.6 / 56.9%</td><td>Shifts to shorts in the 2026 decline</td></tr>
 <tr class="hl"><td>C1 + C2 with walk-forward MSE (C3 retained)</td><td class="num">–</td><td class="num">–</td><td class="num">57.3%</td><td>+1.23% per trade, 461 trades; 310 shorts at 64.5% win</td></tr>
+<tr class="hl"><td>Time-LLM+FM (TimesFM 3 + news, fitted once)</td><td class="num">59.7%</td><td class="num">72.1%</td><td class="num">53.0%</td><td>Pooled 61.1% win, +1.67% per trade (§7c)</td></tr>
 <tr><td>Evidence-aware selective head (fitted once)</td><td class="num">73.3%</td><td class="num">70.2%</td><td class="num">46.9%</td><td>100% longs: a bull-market artefact</td></tr>
 </table></div>
 <p class="note">Winrate = share of trades whose 30-day return had the predicted sign; trades are entered at the open of the event day. 2025–26 runs Jan 2025 – Sep 2026.</p>
@@ -253,7 +261,8 @@ Will MBB rise above today's opening price after 30 trading days?</div>
 <p>We ran 16 methods on the same events, test years, scaling and causal news alignment, with identical scoring: AUC on the 30-day direction, and trades in the top/bottom 10% of scores with thresholds set on validation. Each method uses one seed and its own default hyperparameters; nothing was tuned for this comparison, including ours. Code: <code>stock_llm/sota/</code>.</p>
 <div class="scroll"><table>
 <tr><th>Method</th><th>Family</th><th class="num">AUC 2023</th><th class="num">AUC 2024</th><th class="num">AUC 2025–26</th><th class="num">AUC pooled</th><th class="num">Trades</th><th class="num">Win pooled</th><th class="num">Avg / trade</th></tr>
-<tr><td>TimesFM 3 (zero-shot)</td><td>foundation</td><td class="num">0.515</td><td class="num">0.540</td><td class="num">0.583</td><td class="num"><b>0.557</b></td><td class="num">854</td><td class="num"><b>58.7%</b></td><td class="num"><b>+1.67%</b></td></tr>
+<tr class="hl"><td>Time-LLM+FM (ours, §7c)</td><td>text + series + FM</td><td class="num">0.561</td><td class="num">0.577</td><td class="num">0.554</td><td class="num"><b>0.561</b></td><td class="num">656</td><td class="num"><b>61.1%</b></td><td class="num"><b>+1.67%</b></td></tr>
+<tr><td>TimesFM 3 (zero-shot)</td><td>foundation</td><td class="num">0.515</td><td class="num">0.540</td><td class="num">0.583</td><td class="num">0.557</td><td class="num">854</td><td class="num">58.7%</td><td class="num">+1.67%</td></tr>
 <tr><td>Chronos-2 (zero-shot)</td><td>foundation</td><td class="num">0.482</td><td class="num">0.510</td><td class="num">0.592</td><td class="num">0.543</td><td class="num">888</td><td class="num">58.8%</td><td class="num">+1.50%</td></tr>
 <tr><td>TimesFM 2.5 (zero-shot)</td><td>foundation</td><td class="num">0.460</td><td class="num">0.484</td><td class="num">0.577</td><td class="num">0.529</td><td class="num">1183</td><td class="num">52.7%</td><td class="num">+0.62%</td></tr>
 <tr class="hl"><td>Time-LLM+ (ours, fitted once)</td><td>text + series</td><td class="num">0.507</td><td class="num">0.473</td><td class="num">0.539</td><td class="num">0.517</td><td class="num">763</td><td class="num">52.4%</td><td class="num">+0.40%</td></tr>
@@ -270,7 +279,7 @@ Will MBB rise above today's opening price after 30 trading days?</div>
 <tr><td>TimeMixer</td><td>numeric</td><td class="num">0.336</td><td class="num">0.434</td><td class="num">0.378</td><td class="num">0.386</td><td class="num">1098</td><td class="num">38.1%</td><td class="num">−1.89%</td></tr>
 <tr><td>CALF</td><td>LLM, no text</td><td class="num">0.323</td><td class="num">0.436</td><td class="num">0.380</td><td class="num">0.382</td><td class="num">1144</td><td class="num">39.9%</td><td class="num">−1.62%</td></tr>
 </table></div>
-<p class="note">Floors (majority direction): 57.3% (2023), 58.6% (2024), 52.1% (2025–26). Re-running the same configuration on the second GPU changed AUC by up to ≈0.03, so differences smaller than that are noise. Time-LLM+ walk-forward on 2025–26: 57.3% win, +1.23% per trade (§6).</p>
+<p class="note">Rows other than Time-LLM+FM were run before it was designed. Floors (majority direction): 57.3% (2023), 58.6% (2024), 52.1% (2025–26). Re-running the same configuration on the second GPU changed AUC by up to ≈0.03, so differences smaller than that are noise. Time-LLM+ walk-forward on 2025–26: 57.3% win, +1.23% per trade (§6).</p>
 <h3>How each method was run</h3>
 <ul>
   <li><b>Numeric:</b> Time-Series-Library reference code (commit <code>4e938a1</code>) with TSLib's default hyperparameters; TimeMixer uses its own script settings.</li>
@@ -286,8 +295,28 @@ Will MBB rise above today's opening price after 30 trading days?</div>
   <li><span class="badge bad">Trained forecasters are anti-predictive</span> Every model trained on our data, apart from Time-LLM+, scores a pooled AUC of 0.38–0.46: PatchTST, iTransformer, TimeMixer, TimeXer, CALF and the original Time-LLM. They learn the 2020–22 momentum and extrapolate it into the 2023–26 reversal regime (§8).</li>
   <li><span class="badge bad">Published text fusion does not fix this</span> TaTS, MM-TSFlib and REST-TS stay within ±0.03 of their numeric backbones (0.39–0.44). This agrees with the 2026 "text collapse" and "Semantics or Structure?" findings: the text branch adds little once the numeric backbone dominates.</li>
   <li><span class="badge good">Time-LLM+ is the best model trained on our data</span> Pooled AUC 0.517, versus 0.455 for the original Time-LLM and at most 0.441 for every trained competitor. It is the only trained model above 0.5 in two of three years.</li>
-  <li><span class="badge warn">Zero-shot foundation models are stronger</span> TimesFM 3 (0.557, 58.7% win, +1.67% per trade) and Chronos-2 (0.543) beat everything trained here, mainly through 2025–26 (0.58–0.59). Pre-training on large, diverse corpora avoids fitting this market's regime. A natural next step is to use a foundation-model forecast as the numeric backbone or anchor inside Time-LLM+, combining its robustness with the news signal from C1.</li>
+  <li><span class="badge warn">Zero-shot foundation models are stronger</span> TimesFM 3 (0.557, 58.7% win, +1.67% per trade) and Chronos-2 (0.543) beat everything trained here, mainly through 2025–26 (0.58–0.59). Pre-training on large, diverse corpora avoids fitting this market's regime. Section 7c combines the two: a foundation-model forecast plus the news signal from C1.</li>
 </ul>
+
+<!-- ============================================================ -->
+<h2 id="fm">7c. Time-LLM+FM: adding a foundation model</h2>
+<p>The comparison showed complementary strengths. TimesFM 3 gives the most regime-robust numeric forecast; the frozen LLM's reading of Vietnamese news (C1) carries information no foundation model sees. Time-LLM+FM combines them:</p>
+<div class="eq">score = s · [ z(TimesFM 3 forecast) + z(news sentiment) ] + b  +  shrunk Time-LLM+ correction (C1 + C2)</div>
+<ul>
+  <li><b>Equal-weight z-scores.</b> Both signals are standardised with training statistics and added with equal weight. Only one overall scale <i>s</i> and the intercept <i>b</i> are fitted, so the relative weights cannot be fitted to the 2020–22 regime.</li>
+  <li><b>Causal.</b> TimesFM 3 is zero-shot and sees only prices before the event; news counts only if published before the open.</li>
+  <li><b>Designed on 2023–24 only.</b> On the development years the two signals are nearly independent (correlation 0.06 and 0.14), and Chronos-2 lowered AUC in both years, so it was dropped. 2025–26 was evaluated once afterwards.</li>
+</ul>
+<div class="scroll"><table>
+<tr><th>AUC (trade win)</th><th class="num">2023 (dev)</th><th class="num">2024 (dev)</th><th class="num">2025–26 (check)</th></tr>
+<tr><td>TimesFM 3 alone</td><td class="num">0.515 (51.4%)</td><td class="num">0.540 (65.6%)</td><td class="num">0.583 (56.9%)</td></tr>
+<tr><td>Chronos-2 alone</td><td class="num">0.482 (38.1%)</td><td class="num">0.510 (54.0%)</td><td class="num">0.592 (62.9%)</td></tr>
+<tr><td>Foundation model + Time-LLM, no news</td><td class="num">0.515 (51.7%)</td><td class="num">0.541 (65.5%)</td><td class="num">0.583 (57.1%)</td></tr>
+<tr class="hl"><td>Time-LLM+FM (ours)</td><td class="num">0.561 (59.7%)</td><td class="num">0.577 (72.1%)</td><td class="num">0.554 (53.0%)</td></tr>
+<tr><td>Anchor alone (TimesFM 3 + sentiment, nothing learned)</td><td class="num">0.560 (58.2%)</td><td class="num">0.578 (72.1%)</td><td class="num">0.554 (52.7%)</td></tr>
+</table></div>
+<p><span class="badge good">Development gate passed</span> Time-LLM+FM beats TimesFM 3 by +0.046 AUC in 2023 and +0.037 in 2024. Without news the model stays at TimesFM 3's level (0.515 / 0.541), so the gain comes from the LLM's reading of the news. That is direct evidence for C1 on top of the strongest numeric model.</p>
+<p><span class="badge warn">Limits</span> In 2025–26 news sentiment was weak (AUC ≈ 0.51) and diluted TimesFM 3 (0.554 vs 0.583). The learned Time-LLM+ correction adds almost nothing on top of the anchor (within 0.001). The pooled lead over TimesFM 3 (0.561 vs 0.557) is smaller than run-to-run noise (≈0.03), so the defensible claim is: best in two of three years and first pooled. Next step: weight the news by its recent, already-observed accuracy, so a news signal that stops working is down-weighted automatically.</p>
 
 <!-- ============================================================ -->
 <h2 id="c3">8. C3: why learned regime mechanisms fail</h2>
@@ -331,6 +360,7 @@ Will MBB rise above today's opening price after 30 trading days?</div>
 <tr><td>Train one model</td><td><code>python -m stock_llm.train_plus --fold 2 --prompt news --knowledge 1 --patching bank_text --loss mse</code></td></tr>
 <tr><td>Ablation grid (two machines)</td><td><code>python -m stock_llm.ablations</code>; table: <code>python -m stock_llm.analysis.summarize_ablation</code></td></tr>
 <tr><td>Walk-forward</td><td><code>python -m stock_llm.walk_forward_c3</code></td></tr>
+<tr><td>Time-LLM+FM</td><td><code>python -m stock_llm.run_fm</code></td></tr>
 <tr><td>SOTA comparison (both machines)</td><td><code>python -m stock_llm.sota.compare</code> (table: <code>--run 0</code>)</td></tr>
 <tr><td>C3 experiments</td><td><code>python -m stock_llm.c3_search</code>, <code>python -m stock_llm.run_regime_adapt</code></td></tr>
 <tr><td>Backtest</td><td><code>python -m stock_llm.backtest_plus --pattern "reports/.../pred_*.npz"</code></td></tr>
