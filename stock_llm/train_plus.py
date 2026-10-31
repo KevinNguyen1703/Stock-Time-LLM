@@ -185,7 +185,7 @@ class Split:
         sent = np.array([sum(it["score"] for it in its) if news else 0 for its in items], float)
         self.afeat = sent[:, None]
         if a.anchor_fm:   # zero-shot foundation-model forecasts of the 30-day return (causal: past prices only)
-            fm = [dict(zip(z["idx"], z["score"])) for z in (np.load(f"data/fm_scores/{m}.npz") for m in FM_MODELS)]
+            fm = [dict(zip(z["idx"], z["score"])) for z in (np.load(f"data/fm_scores/{m}.npz") for m in a.fm_models)]
             self.afeat = np.concatenate([self.afeat, np.array([[d[i] for d in fm] for i in self.orig_idx])], 1)
         self.anchor = torch.zeros(len(df), 2)
         self.dates = pd.to_datetime(df["date"]).to_numpy()
@@ -233,8 +233,19 @@ class Anchor:
     W_MIN = 0.1
     W_MIN_FM = 1.0   # a forecast's sign is positive by construction; floor keeps it from being fitted away
 
-    def fit(self, s, balanced=False):
+    def fit(self, s, balanced=False, mode="fit"):
         from sklearn.linear_model import LogisticRegression
+        if mode == "zsum":
+            # equal-weight combination of independent signals (z-scored with training statistics); only one
+            # overall scale (floored > 0) and the intercept are fitted, so relative weights cannot be fitted to
+            # the training regime
+            self.mu, self.sd = s.afeat.mean(0), s.afeat.std(0) + 1e-8
+            zs = ((s.afeat - self.mu) / self.sd).sum(1, keepdims=True)
+            self.w = []
+            for y in (s.ret > 0, s.rel > 0):
+                m = LogisticRegression(C=1.0, class_weight="balanced" if balanced else None).fit(zs, y)
+                self.w.append((np.full(s.afeat.shape[1], max(m.coef_[0][0], self.W_MIN)), float(m.intercept_[0])))
+            return self
         self.mu, self.sd = s.afeat.mean(0), s.afeat.std(0) + 1e-8
         z = (s.afeat - self.mu) / self.sd
         self.w = []
@@ -332,7 +343,10 @@ def main():
     ap.add_argument("--shrink", type=float, default=1.0, help="penalty keeping the learned correction near the anchor")
     ap.add_argument("--hyper_lr_mult", type=float, default=5.0)
     ap.add_argument("--anchor_fm", type=int, default=0,
-                    help="add zero-shot TimesFM 3 + Chronos-2 forecasts to the anchor (Time-LLM+FM)")
+                    help="add zero-shot foundation-model forecasts to the anchor (Time-LLM+FM)")
+    ap.add_argument("--fm_models", nargs="+", default=list(FM_MODELS), choices=["timesfm3", "chronos2"])
+    ap.add_argument("--anchor_mode", default="fit", choices=["fit", "zsum"],
+                    help="fit: per-signal logistic weights (floored); zsum: equal-weight z-score sum")
     ap.add_argument("--val_days", type=int, default=250, help="validation window (trading days) before the test year")
     ap.add_argument("--select", default="last", choices=["last", "best"],
                     help="last = fixed epochs (default); best = epoch with the best validation AUC")
@@ -379,7 +393,7 @@ def main():
         s_.tot = torch.from_numpy((s_.ret / tot_sd).astype(np.float32))
         s_.mstate = torch.from_numpy(((s_.mstate_raw - ms_mu) / ms_sd).astype(np.float32))
     rel = a.loss.endswith("_rel")
-    anchor = Anchor().fit(s_tr, balanced=rel)
+    anchor = Anchor().fit(s_tr, balanced=rel, mode=a.anchor_mode)
     for s_ in (s_tr, s_va, s_te):
         anchor.apply(s_)
     print("anchor sentiment weight (total, company):",
@@ -440,7 +454,8 @@ def main():
         k = "band_periods_by_event" if a.patching in BANK_MODES else "band_weights_by_event"
         res[k] = {e: wt[np.array(s_te.events) == e].mean(0).round(3).tolist() for e in sorted(set(s_te.events))}
     tag = (f"{a.backbone}_f{a.fold}_h{a.horizon}_p-{a.prompt}_k{a.knowledge}_{a.patching}_{a.loss}_s{a.seed}"
-           + (f"_shrink{a.shrink:g}" if a.shrink != 1.0 else "") + ("_fm" if a.anchor_fm else "")
+           + (f"_shrink{a.shrink:g}" if a.shrink != 1.0 else "")
+           + (f"_fm-{'-'.join(a.fm_models)}" if a.anchor_fm else "") + (f"_{a.anchor_mode}" if a.anchor_mode != "fit" else "")
            + (f"_limit{a.limit}" if a.limit else "")
            + a.tag_suffix)
     json.dump(res, open(f"{a.out}/{tag}.json", "w"), indent=1)

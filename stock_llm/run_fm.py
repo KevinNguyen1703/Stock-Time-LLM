@@ -1,5 +1,6 @@
-"""Time-LLM+FM: foundation-model forecasts (TimesFM 3 + Chronos-2, zero-shot) in the anchor, news + Time-LLM+
-as a shrunk learned correction. Compared with each foundation model alone, the anchor alone (FM ensemble +
+"""Time-LLM+FM (v2): equal-weight z-score anchor of the zero-shot TimesFM 3 forecast and the frozen-LLM news
+sentiment (Chronos-2 dropped: it lowered AUC in both development years), plus the Time-LLM+ news model as a shrunk
+learned correction. Compared with each foundation model alone, the anchor alone (FM ensemble +
 sentiment, no learning) and an FM + Time-LLM variant without news.
 
 Pre-declared gate: on 2023 and 2024, Time-LLM+FM must beat TimesFM 3 alone on AUC in both years; only then is
@@ -16,9 +17,10 @@ from stock_llm.runmany import run_jobs
 YEARS = {0: "2023", 1: "2024", 2: "2025-26"}
 
 
-def args(fold, news):
+def args(fold, news, tag="v2"):
     a = ["--fold", str(fold), "--loss", "dir", "--coverage", "0.2", "--anchor_fm", "1",
-         "--out", f"reports/fm/{'news' if news else 'nonews'}", *COMMON]
+         "--fm_models", "timesfm3", "--anchor_mode", "zsum",
+         "--out", f"reports/fm_{tag}/{'news' if news else 'nonews'}", *COMMON]
     if not news:
         a[a.index("--prompt") + 1] = "static"
         a[a.index("--knowledge") + 1] = "0"
@@ -38,9 +40,9 @@ def report():
         for name, d in (("TimesFM 3 alone", "reports/sota/timesfm3"), ("Chronos-2 alone", "reports/sota/chronos2")):
             z = np.load(glob.glob(f"{d}/pred_*_f{f}_s0.npz")[0], allow_pickle=True)
             out[name] = auc_trade(z["p_total"], z["ret"], z["side_q"])
-        for name, d in (("Time-LLM+FM (ours)", "reports/fm/news"), ("FM + Time-LLM, no news", "reports/fm/nonews")):
-            j = json.load(open(glob.glob(f"{d}/*_f{f}_*_fm.json")[0]))
-            z = np.load(glob.glob(f"{d}/pred_*_f{f}_*_fm.npz")[0], allow_pickle=True)
+        for name, d in (("Time-LLM+FM (ours)", "reports/fm_v2/news"), ("FM + Time-LLM, no news", "reports/fm_v2/nonews")):
+            j = json.load(open(glob.glob(f"{d}/qwen*_f{f}_*.json")[0]))
+            z = np.load(glob.glob(f"{d}/pred_*_f{f}_*.npz")[0], allow_pickle=True)
             out[name] = auc_trade(z["p_total"], z["ret"], z["side_q"])
             if name.startswith("Time-LLM+FM"):
                 at = j["anchor_test"]
@@ -56,5 +58,5 @@ def report():
 
 
 if __name__ == "__main__":
-    run_jobs([(f"fm_{'news' if n else 'nonews'}_f{f}", args(f, n)) for n in (True, False) for f in YEARS])
+    run_jobs([(f"fmv2_{'news' if n else 'nonews'}_f{f}", args(f, n)) for n in (True, False) for f in YEARS])
     report()
