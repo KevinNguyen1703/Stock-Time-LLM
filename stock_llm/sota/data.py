@@ -12,16 +12,11 @@ Per event (one row of data/text/events.pkl):
   ret, rel            30-day raw and peer-relative returns (evaluation)
 """
 import json
+import os
 
 import numpy as np
-import pandas as pd
 
-from stock_llm.data.events import SEQ_LEN, split_fold
-from stock_llm.data.multimodal import TextStore
-from stock_llm.data.news import bucket_to_trading_day
-from stock_llm.data.prices import load_prices
-from stock_llm.data.universe import TICKERS
-from stock_llm.train_plus import future_paths
+CACHE = "data/sota_cache"
 
 TARGET = "ret_1"
 MAX_ITEMS = 8
@@ -35,6 +30,11 @@ def channel_order(cols):
 class TextTables:
     """Daily mean news embedding per ticker (by first usable trading day) and a title -> row map."""
     def __init__(self):
+        import pandas as pd
+        from stock_llm.data.multimodal import TextStore
+        from stock_llm.data.news import bucket_to_trading_day
+        from stock_llm.data.prices import load_prices
+        from stock_llm.data.universe import TICKERS
         st = TextStore()
         self.emb = st.emb
         c = st.corpus
@@ -53,6 +53,9 @@ class TextTables:
 
 
 def build_split(df, scaler, order, sd_target, h, tt):
+    import pandas as pd
+    from stock_llm.data.events import SEQ_LEN
+    from stock_llm.train_plus import future_paths
     ts = np.stack(df["ts"].to_list())
     x = ((ts - scaler[0]) / scaler[1])[:, :, order].astype(np.float32)
     fut = (future_paths(df, h) / sd_target).astype(np.float32)
@@ -68,11 +71,26 @@ def build_split(df, scaler, order, sd_target, h, tt):
             if r is not None:
                 items[j, k] = tt.emb[r]; mask[j, k] = True
     return {"x": x, "fut": fut, "text": text, "items": items, "mask": mask,
-            "ret": df[f"ret_{h}"].to_numpy(), "rel": df[f"rel_{h}"].to_numpy(),
-            "ticker": df["ticker"].to_numpy(), "date": df["date"].to_numpy(), "idx": df.index.to_numpy()}
+            "ret": df[f"ret_{h}"].to_numpy(np.float64), "rel": df[f"rel_{h}"].to_numpy(np.float64),
+            "ticker": df["ticker"].to_numpy().astype("U8"), "date": df["date"].to_numpy().astype("datetime64[D]"),
+            "idx": df.index.to_numpy(np.int64)}
+
+
+def cache_path(fold, h, val_days, test_range):
+    rng = f"_{test_range[0]}_{test_range[1]}" if test_range else ""
+    return f"{CACHE}/fold{fold}_h{h}_v{val_days}{rng}.npz"
 
 
 def build_fold(fold, h=30, val_days=250, test_range=None, tt=None):
+    """Splits as plain arrays, cached to an .npz (no pickled objects) so environments with other NumPy
+    versions (e.g. CALF's pinned environment) can read them."""
+    path = cache_path(fold, h, val_days, test_range)
+    if os.path.exists(path):
+        z = np.load(path)
+        out = {s: {k.split("/", 1)[1]: z[k] for k in z.files if k.startswith(s + "/")} for s in ("train", "val", "test")}
+        return out, {"channels": list(z["meta/channels"]), "sd_target": float(z["meta/sd_target"])}
+    import pandas as pd
+    from stock_llm.data.events import split_fold
     df = pd.read_pickle("data/text/events.pkl")
     cols = json.load(open("data/text/events_cols.json"))
     order, names = channel_order(cols)
@@ -81,4 +99,8 @@ def build_fold(fold, h=30, val_days=250, test_range=None, tt=None):
     sd_target = float(scaler[1][cols.index(TARGET)])
     tt = tt or TextTables()
     out = {k: build_split(d, scaler, order, sd_target, h, tt) for k, d in (("train", tr), ("val", va), ("test", te))}
-    return out, {"channels": names, "sd_target": sd_target}
+    meta = {"channels": names, "sd_target": sd_target}
+    os.makedirs(CACHE, exist_ok=True)
+    np.savez(path, **{f"{s}/{k}": v for s, d in out.items() for k, v in d.items()},
+             **{"meta/channels": np.array(names), "meta/sd_target": np.array(sd_target)})
+    return out, meta
