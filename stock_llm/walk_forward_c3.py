@@ -19,7 +19,7 @@ from stock_llm.runmany import run_jobs
 from stock_llm.walk_forward import QUARTERS
 
 OUT = "reports/walkforward_c3"
-MODELS = {"c3": "sel_evidence", "dir": "dir", "mse": "mse", "c3rel": "sel_evidence_rel"}
+MODELS = {"c3": "sel_evidence", "dir": "dir", "mse": "mse", "c3rel": "sel_evidence_rel", "ra": "regime_adapt"}
 
 
 def jobs():

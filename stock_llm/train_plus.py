@@ -131,6 +131,25 @@ def future_paths(df, h):
     return out
 
 
+def causal_drift(df_all, dates, h, window=60, min_n=5):
+    """Causal market-drift estimate for each prediction date: mean realised h-day return of universe events
+    whose holding window ENDED within the last `window` trading days before that date (already observable).
+    Falls back to the mean of all matured events when fewer than min_n are available."""
+    ev = df_all.dropna(subset=[f"ret_{h}"])[["date", f"end_{h}", f"ret_{h}"]].sort_values(f"end_{h}")
+    ends = ev[f"end_{h}"].to_numpy(); rets = ev[f"ret_{h}"].to_numpy()
+    days = pd.read_csv("data/prices/VNINDEX.csv", parse_dates=["Date"])["Date"].sort_values().to_numpy()  # calendar
+    out = np.zeros(len(dates))
+    csum = np.r_[0, np.cumsum(rets)]
+    for j, d in enumerate(pd.to_datetime(dates).to_numpy()):
+        hi = np.searchsorted(ends, d, side="left")                       # ended strictly before d
+        k = np.searchsorted(days, d)
+        lo_day = days[max(0, k - window)]
+        lo = np.searchsorted(ends, lo_day, side="left")
+        n = hi - lo
+        out[j] = (csum[hi] - csum[lo]) / n if n >= min_n else (csum[hi] / hi if hi > 0 else 0.0)
+    return out
+
+
 class Split:
     def __init__(self, df, model, a, scaler, ci, sd, rng, vol_median):
         df = df.reset_index(drop=True)
@@ -167,6 +186,9 @@ class Split:
         self.anchor = torch.zeros(len(df), 2)
         self.dates = pd.to_datetime(df["date"]).to_numpy()
         self.future = torch.from_numpy(future_paths(df, a.horizon))
+        self.drift_raw = causal_drift(a.df_all, df["date"], a.horizon)
+        self.mstate_raw = np.stack([last[:, ci["mkt_ret_20"]], last[:, ci["mkt_vol_20"]], self.drift_raw], 1)
+        self.drift = torch.zeros(len(df)); self.mstate = torch.zeros(len(df), 3); self.tot = torch.zeros(len(df))
         self.df, self.tok = df, model.tok
 
     def week_batches(self, bs, rng):
@@ -187,7 +209,9 @@ class Split:
                 (kn[:, 0].to(device), kn[:, 1].to(device), kn[:, 2].to(device), kn[:, 3].to(device),
                  self.mask[idx].to(device)),
                 {"mkt": self.mkt_t[idx].to(device), "comp": self.comp_t[idx].to(device),
-                 "regime": self.regime[idx].to(device)}, self.anchor[idx].to(device), self.future[idx].to(device))
+                 "regime": self.regime[idx].to(device), "drift": self.drift[idx].to(device),
+                 "tot": self.tot[idx].to(device),
+                 "mstate": self.mstate[idx].to(device)}, self.anchor[idx].to(device), self.future[idx].to(device))
 
 
 # ---------------------------------------------------------------- anchor (A)
@@ -217,8 +241,11 @@ class Anchor:
 
 
 # ---------------------------------------------------------------- eval
-def scores(out, loss_mode):
+def scores(out, loss_mode, drift=None):
     """Return (total-direction score, company-direction score), centred at 0."""
+    if loss_mode == "regime_adapt":
+        full = out["gamma"] * drift + out["market"] + out["company"]
+        return full, out["company"]
     if loss_mode in SEL_LOSSES:
         t = torch.sigmoid(out["dir_total"]) - 0.5
         return t, t
@@ -236,8 +263,9 @@ def predict(model, s, a, device, bs):
     pt_, pc_, conf, w = [], [], [], []
     for i in range(0, len(s), bs):
         ids, am, ts, kn, y_, anc, _ = s.batch(list(range(i, min(i + bs, len(s)))), device)
-        out = model(ids, am, ts, kn, anc, regime=y_["regime"])
-        p_tot, p_comp = scores(out, a.loss)
+        out = model(ids, am, ts, kn, anc, regime=y_["regime"],
+                    mstate=y_["mstate"] if a.loss == "regime_adapt" else None)
+        p_tot, p_comp = scores(out, a.loss, y_["drift"])
         pt_.append(p_tot.float().cpu()); pc_.append(p_comp.float().cpu())
         conf.append(torch.sigmoid(out["conf"]).float().cpu())
         extra = getattr(model.spec, "last_periods", None)
@@ -317,6 +345,7 @@ def main():
     rng = np.random.default_rng(a.seed)
     device = "cuda"
     df = pd.read_pickle("data/text/events.pkl")
+    a.df_all = df
     cols = json.load(open("data/text/events_cols.json"))
     ci = {c: i for i, c in enumerate(cols)}
     rng_ = (a.test_start, a.test_end) if a.test_start else None
@@ -332,6 +361,12 @@ def main():
     print(f"trainable params: {sum(p.numel() for p in params):,} (LLM frozen)", flush=True)
     vol_median = float(np.median([t[-1][ci["mkt_vol_20"]] for t in tr["ts"]]))
     s_tr, s_va, s_te = [Split(d, model, a, scaler, ci, sd, rng, vol_median) for d in (tr, va, te)]
+    tot_sd = float(np.std(s_tr.ret))
+    ms_mu, ms_sd = s_tr.mstate_raw.mean(0), s_tr.mstate_raw.std(0) + 1e-8
+    for s_ in (s_tr, s_va, s_te):
+        s_.drift = torch.from_numpy((s_.drift_raw / tot_sd).astype(np.float32))
+        s_.tot = torch.from_numpy((s_.ret / tot_sd).astype(np.float32))
+        s_.mstate = torch.from_numpy(((s_.mstate_raw - ms_mu) / ms_sd).astype(np.float32))
     rel = a.loss.endswith("_rel")
     anchor = Anchor().fit(s_tr, balanced=rel)
     for s_ in (s_tr, s_va, s_te):
@@ -358,7 +393,8 @@ def main():
         t0, losses = time.time(), []
         for idx in s_tr.week_batches(a.bs, rng):
             ids, am, ts, kn, y, anc, fut = s_tr.batch(idx, device)
-            out = {k: v.float() for k, v in model(ids, am, ts, kn, anc, fut, regime=y["regime"]).items()}
+            out = {k: v.float() for k, v in model(ids, am, ts, kn, anc, fut, regime=y["regime"],
+                                                  mstate=y["mstate"] if a.loss == "regime_adapt" else None).items()}
             loss = compute_loss(out, y, a.loss, a.coverage, dro, primary=a.primary, shrink=a.shrink, pos_weight=pos_w)
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(params, 1.0); opt.step(); sched.step()
@@ -381,6 +417,7 @@ def main():
                             weights=recency_weights(s_va.dates, a.ltt_half_life))
     else:
         conf_thr, ltt = "off", "off"
+    a.df_all = None                                    # not JSON-serialisable
     res = {"args": vars(a), "anchor_w": [[w.tolist(), b] for w, b in anchor.w],
            "val": evaluate(pv_tot, pv_comp, cv, s_va, a.primary, thr, conf_thr, ltt),
            "test": evaluate(pt_tot, pt_comp, ct, s_te, a.primary, thr, conf_thr, ltt), "ltt_threshold": ltt}

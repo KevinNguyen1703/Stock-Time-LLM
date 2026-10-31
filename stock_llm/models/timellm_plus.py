@@ -31,6 +31,7 @@ EVENTS = list(EVENT_VI)
 SOURCES = ["filing", "press", "market_stock", "market_bank", "market_macro"]
 MAX_ITEMS, MAX_AGE = 8, 5
 N_REGIMES = 4
+N_MARKET_STATE = 3   # VN-Index 20-day return, VN-Index 20-day volatility, causal drift estimate (all standardised)
 N_KSTATS = 3   # explicit news statistics for the hypernetwork: net sentiment, mean sentiment, item count
 BRANCHES = {"fixed": [8], "fft": [4, 8, 16], "fft_attn": [4, 8, 16], "fft_text": [4, 8, 16]}
 BANK_MODES = ("bank", "bank_text", "bank_text_aligned")   # C2: static bank / + hypernetwork / + period-aligned
@@ -266,6 +267,11 @@ class TimeLLMPlus(nn.Module):
         # value and strength, so it can learn when the model should act on (or overrule) the news signal
         self.conf_evidence = nn.Sequential(nn.Linear(256 + 2, 64), nn.GELU(), nn.Linear(64, 1))
         self.use_evidence_conf = False
+        # C3 regime-adaptive re-centring (loss "regime_adapt"): prediction = gamma(market state) * drift + core,
+        # where drift = causal estimate of the current market drift (recent matured event returns) and the core
+        # is trained on drift-removed targets. gamma is bounded in (-1, 2) and starts near 1.
+        self.regime_gate = nn.Sequential(nn.Linear(N_MARKET_STATE, 32), nn.GELU(), nn.Linear(32, 1))
+        nn.init.zeros_(self.regime_gate[-1].weight); nn.init.constant_(self.regime_gate[-1].bias, 0.69)
         with torch.no_grad():   # corrections start at exactly 0, so the model starts at the anchor
             self.heads.weight[2:4].zero_(); self.heads.bias[2:4].zero_()
 
@@ -285,7 +291,7 @@ class TimeLLMPlus(nn.Module):
         net = (sc * mask).sum(1)
         return torch.stack([net / 4, net / n.clamp(min=1) / 2, n / MAX_ITEMS], 1)
 
-    def forward(self, input_ids, attention_mask, ts, kn, anchor, future=None, regime=None):
+    def forward(self, input_ids, attention_mask, ts, kn, anchor, future=None, regime=None, mstate=None):
         """anchor: [B, 2] fixed-sign baseline logits (total, company) fitted on training data only."""
         # Only the frozen LLM runs in bf16. All trainable modules run in fp32: under bf16 autocast the heads'
         # outputs keep ~3 significant digits and per-event score differences were rounded to a single value.
@@ -315,7 +321,12 @@ class TimeLLMPlus(nn.Module):
                 onehot = nn.functional.one_hot(regime, N_REGIMES).float()
                 o = torch.cat([o[:, :4], self.conf_regime(torch.cat([z, onehot], 1))], 1)
         aux = getattr(self.spec, "aux", None)
-        return {"market": o[:, 0], "company": o[:, 1], "corr_total": o[:, 2], "corr_company": o[:, 3],
+        gamma = None
+        if mstate is not None:
+            with torch.autocast("cuda", enabled=False):
+                gamma = 3 * torch.sigmoid(self.regime_gate(mstate.float()).squeeze(-1)) - 1   # in (-1, 2)
+        return {"gamma": gamma if gamma is not None else torch.zeros_like(o[:, 0]),
+                "market": o[:, 0], "company": o[:, 1], "corr_total": o[:, 2], "corr_company": o[:, 3],
                 "dir_total": anchor[:, 0] + o[:, 2], "dir_company": anchor[:, 1] + o[:, 3], "conf": o[:, 4],
                 "aux": aux if isinstance(aux, torch.Tensor) and aux.requires_grad else torch.zeros((), device=o.device)}
 
@@ -323,7 +334,8 @@ class TimeLLMPlus(nn.Module):
 LOSSES = ("mse", "hybrid", "decomp", "dro", "dro_rank", "full",
           "sel", "hybrid_sel", "sel_profit", "sel_regime", "sel_evidence",   # C3 redesign (selection-focused)
           "sel_evidence_rel",                                    # + regime-neutral (balanced) direction
-          "dir")                                                 # reference: anchored direction head, no selection
+          "dir",                                                 # reference: anchored direction head, no selection
+          "regime_adapt")                                        # C3 final: regime-adaptive re-centring
 SEL_LOSSES = ("sel", "hybrid_sel", "sel_profit", "sel_regime", "sel_evidence", "sel_evidence_rel", "dir")
 
 
@@ -381,6 +393,13 @@ def compute_loss(out, batch, loss_mode, coverage, dro=None, rank_weight=0.5, dir
     aux = aux_weight * out["aux"]
     if loss_mode == "mse":
         return nn.functional.mse_loss(total_pred, total_true) + aux
+    if loss_mode == "regime_adapt":
+        # core learns the drift-removed (regime-neutral) return; the full prediction adds gamma * drift
+        drift, y = batch["drift"], batch["tot"]          # both in units of the training std of the total return
+        core = out["market"] + out["company"]
+        full = out["gamma"] * drift + core
+        return (nn.functional.mse_loss(full, y) + nn.functional.mse_loss(core, y - drift)
+                + 0.01 * ((out["gamma"] - 1) ** 2).mean() + aux)
     if loss_mode in SEL_LOSSES:        # C3 redesign: plain return objective + learned trade selection
         up = (total_true > 0).float()
         bce = nn.functional.binary_cross_entropy_with_logits
