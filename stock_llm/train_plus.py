@@ -152,6 +152,7 @@ def causal_drift(df_all, dates, h, window=60, min_n=5):
 
 class Split:
     def __init__(self, df, model, a, scaler, ci, sd, rng, vol_median):
+        self.orig_idx = df.index.to_numpy()        # row ids in events.pkl (to look up cached FM forecasts)
         df = df.reset_index(drop=True)
         items = df["items"].to_list()
         if a.prompt == "news_shuffled":
@@ -183,6 +184,9 @@ class Split:
         # anchor feature (A): net LLM news sentiment (only when the prompt carries news)
         sent = np.array([sum(it["score"] for it in its) if news else 0 for its in items], float)
         self.afeat = sent[:, None]
+        if a.anchor_fm:   # zero-shot foundation-model forecasts of the 30-day return (causal: past prices only)
+            fm = [dict(zip(z["idx"], z["score"])) for z in (np.load(f"data/fm_scores/{m}.npz") for m in FM_MODELS)]
+            self.afeat = np.concatenate([self.afeat, np.array([[d[i] for d in fm] for i in self.orig_idx])], 1)
         self.anchor = torch.zeros(len(df), 2)
         self.dates = pd.to_datetime(df["date"]).to_numpy()
         self.future = torch.from_numpy(future_paths(df, a.horizon))
@@ -215,6 +219,9 @@ class Split:
 
 
 # ---------------------------------------------------------------- anchor (A)
+FM_MODELS = ("timesfm3", "chronos2")
+
+
 class Anchor:
     """Theory-signed baseline on the net LLM news sentiment: positive news -> higher probability of a rise.
 
@@ -224,6 +231,7 @@ class Anchor:
     sign has no a-priori justification at this horizon and flipped between our training and test years.
     One model per target (total return, company-specific return)."""
     W_MIN = 0.1
+    W_MIN_FM = 1.0   # a forecast's sign is positive by construction; floor keeps it from being fitted away
 
     def fit(self, s, balanced=False):
         from sklearn.linear_model import LogisticRegression
@@ -232,7 +240,8 @@ class Anchor:
         self.w = []
         for y in (s.ret > 0, s.rel > 0):
             m = LogisticRegression(C=1.0, class_weight="balanced" if balanced else None).fit(z, y)
-            self.w.append((np.maximum(m.coef_[0], self.W_MIN), float(m.intercept_[0])))
+            floor = np.array([self.W_MIN] + [self.W_MIN_FM] * (s.afeat.shape[1] - 1))
+            self.w.append((np.maximum(m.coef_[0], floor), float(m.intercept_[0])))
         return self
 
     def apply(self, s):
@@ -322,6 +331,8 @@ def main():
                     help="target used for trading rules and the selective head (both are always reported)")
     ap.add_argument("--shrink", type=float, default=1.0, help="penalty keeping the learned correction near the anchor")
     ap.add_argument("--hyper_lr_mult", type=float, default=5.0)
+    ap.add_argument("--anchor_fm", type=int, default=0,
+                    help="add zero-shot TimesFM 3 + Chronos-2 forecasts to the anchor (Time-LLM+FM)")
     ap.add_argument("--val_days", type=int, default=250, help="validation window (trading days) before the test year")
     ap.add_argument("--select", default="last", choices=["last", "best"],
                     help="last = fixed epochs (default); best = epoch with the best validation AUC")
@@ -429,7 +440,8 @@ def main():
         k = "band_periods_by_event" if a.patching in BANK_MODES else "band_weights_by_event"
         res[k] = {e: wt[np.array(s_te.events) == e].mean(0).round(3).tolist() for e in sorted(set(s_te.events))}
     tag = (f"{a.backbone}_f{a.fold}_h{a.horizon}_p-{a.prompt}_k{a.knowledge}_{a.patching}_{a.loss}_s{a.seed}"
-           + (f"_shrink{a.shrink:g}" if a.shrink != 1.0 else "") + (f"_limit{a.limit}" if a.limit else "")
+           + (f"_shrink{a.shrink:g}" if a.shrink != 1.0 else "") + ("_fm" if a.anchor_fm else "")
+           + (f"_limit{a.limit}" if a.limit else "")
            + a.tag_suffix)
     json.dump(res, open(f"{a.out}/{tag}.json", "w"), indent=1)
     os.makedirs("checkpoints/plus", exist_ok=True)   # trainable weights only (the LLM is frozen and reloaded by name)
