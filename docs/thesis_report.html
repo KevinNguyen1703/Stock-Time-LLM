@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Time-LLM+ Thesis Report</title>
+<style>
+  :root {
+    --bg: #fbfbf9; --fg: #1d1d1b; --muted: #5f5f5a; --line: #deded8; --card: #ffffff;
+    --accent: #2457a6; --good: #1e7a46; --warn: #a86b00; --bad: #b0302b; --code: #f1f1ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #161615; --fg: #e9e9e4; --muted: #a3a39c; --line: #34342f; --card: #1e1e1c;
+      --accent: #7aa7ec; --good: #5cc28a; --warn: #e3a63a; --bad: #ef7a73; --code: #262623;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #161615; --fg: #e9e9e4; --muted: #a3a39c; --line: #34342f; --card: #1e1e1c;
+    --accent: #7aa7ec; --good: #5cc28a; --warn: #e3a63a; --bad: #ef7a73; --code: #262623;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 16px/1.6 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 32px 16px 80px; }
+  h1 { font-size: 2rem; line-height: 1.25; margin: 0 0 8px; }
+  h2 { font-size: 1.4rem; margin: 48px 0 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+  h3 { font-size: 1.1rem; margin: 28px 0 8px; }
+  p, li { color: var(--fg); }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  nav { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; }
+  nav ol { margin: 0; padding-left: 20px; columns: 2; column-gap: 32px; }
+  nav a, a { color: var(--accent); text-decoration: none; }
+  nav a:hover, a:hover { text-decoration: underline; }
+  .tldr { background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--accent);
+          border-radius: 8px; padding: 12px 16px; margin: 20px 0; }
+  .tldr ul { margin: 6px 0 0; padding-left: 20px; }
+  .scroll { overflow-x: auto; margin: 12px 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.92rem; background: var(--card); }
+  th, td { border: 1px solid var(--line); padding: 6px 9px; text-align: left; vertical-align: top; }
+  th { background: var(--code); font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  tr.hl td { background: color-mix(in srgb, var(--accent) 10%, var(--card)); font-weight: 600; }
+  .good { color: var(--good); font-weight: 600; }
+  .warn { color: var(--warn); font-weight: 600; }
+  .bad { color: var(--bad); font-weight: 600; }
+  code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 0.88em; }
+  .eq { background: var(--code); border-radius: 6px; padding: 10px 14px; font-family: ui-monospace, Menlo, Consolas, monospace;
+        overflow-x: auto; white-space: pre; font-size: 0.9rem; }
+  .note { color: var(--muted); font-size: 0.9rem; }
+  .pipe { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 12px 0; }
+  .pipe span { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px; font-size: 0.88rem; }
+  .pipe b { color: var(--muted); }
+  .badge { display: inline-block; border-radius: 999px; padding: 1px 9px; font-size: 0.8rem; font-weight: 600; border: 1px solid currentColor; }
+  footer { margin-top: 56px; color: var(--muted); font-size: 0.85rem; border-top: 1px solid var(--line); padding-top: 12px; }
+  @media (max-width: 640px) { nav ol { columns: 1; } h1 { font-size: 1.6rem; } }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Time-LLM+: Multimodal LLM Forecasting for Vietnamese Stocks</h1>
+<p class="sub">Thesis progress report · branch <code>thesis/multimodal</code> · data through 28 Oct 2026</p>
+
+<div class="tldr">
+  <strong>Summary</strong>
+  <ul>
+    <li><b>C1, event-grounded news prompting:</b> <span class="good">holds up.</span> Real pre-open news in the prompt beats the original Time-LLM prompt, our earlier data-derived prompt and a shuffled-news control (pooled AUC 0.541 vs 0.489 / 0.490 / 0.508).</li>
+    <li><b>C2, news-conditioned spectral filter bank:</b> <span class="warn">partially holds up.</span> It is the best patching variant (0.550) and beats our earlier FFT+attention patching (0.528). Period-aligned patching does not help, and post-event time scales barely differ by event type.</li>
+    <li><b>C3, regime handling:</b> <span class="bad">no learned mechanism is robust</span>, because market relationships flipped sign around 2023. <span class="good">Walk-forward retraining of a regime-neutral model is the robust fix:</span> <b>57.3% winrate, +1.23% per trade</b> out of sample (2025–26).</li>
+    <li>The 60% winrate target was reached on the development years (61.9% / 62.3%), <b>not</b> out of sample.</li>
+  </ul>
+</div>
+
+<nav>
+  <ol>
+    <li><a href="#timellm">What is Time-LLM?</a></li>
+    <li><a href="#weak">Weaknesses of Time-LLM</a></li>
+    <li><a href="#data">Data and evaluation protocol</a></li>
+    <li><a href="#evidence">Preliminary evidence</a></li>
+    <li><a href="#method">Our method: Time-LLM+</a></li>
+    <li><a href="#results">Results</a></li>
+    <li><a href="#ablation">Ablation study</a></li>
+    <li><a href="#c3">C3: why regime mechanisms fail</a></li>
+    <li><a href="#limits">Limitations and next steps</a></li>
+    <li><a href="#repro">Reproducing the results</a></li>
+  </ol>
+</nav>
+
+<!-- ============================================================ -->
+<h2 id="timellm">1. What is Time-LLM?</h2>
+<p><b>Time-LLM</b> (Jin et al., ICLR 2024) repurposes a <b>frozen</b> large language model for time-series forecasting. Instead of fine-tuning the LLM, it translates the series into a form the LLM can read:</p>
+<div class="pipe">
+  <span>Input series</span><b>→</b><span>Patching (fixed length/stride)</span><b>→</b>
+  <span>Reprogramming: cross-attention to word-embedding prototypes</span><b>→</b>
+  <span>Prompt-as-Prefix + soft tokens</span><b>→</b><span>Frozen LLM</span><b>→</b><span>Output projection (MSE forecast)</span>
+</div>
+<ul>
+  <li><b>Patching:</b> the series is cut into fixed-length overlapping patches, each embedded as a token.</li>
+  <li><b>Reprogramming:</b> patch embeddings attend to a small set of <i>text prototypes</i> (learned linear combinations of the LLM's word embeddings), so the time series is expressed in the LLM's own embedding space.</li>
+  <li><b>Prompt-as-Prefix:</b> a text prefix describes the dataset and task and gives input statistics (min, max, median, trend, top lags).</li>
+  <li><b>Frozen backbone:</b> only patching, reprogramming and the output head are trained, which keeps the trainable parameter count small.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="weak">2. Weaknesses of Time-LLM (for stock prediction)</h2>
+<div class="scroll"><table>
+<tr><th>Weakness</th><th>Why it matters for stocks</th><th>Evidence in this project</th></tr>
+<tr><td><b>The prompt adds no new information</b></td><td>The prefix only restates statistics of the same series the model already sees. The LLM's language ability is never used for information the prices lack.</td><td>Price-only models of every kind (LSTM, DLinear, PatchTST, gradient boosting) show no next-day signal (IC ≈ 0; direction accuracy ≈ the always-down floor).</td></tr>
+<tr><td><b>Fixed patching</b></td><td>One patch length for all inputs, chosen by hand, regardless of what is happening to the stock.</td><td>Our earlier FFT+attention patching only re-weighted fixed patches (the "weighted sum" critique).</td></tr>
+<tr><td><b>Plain MSE objective</b></td><td>Regression on noisy returns ignores direction, trade selection and market regime.</td><td>Our earlier hybrid loss scored well pooled (AUC 0.559) but collapsed in 2024 (0.467).</td></tr>
+<tr><td><b>No handling of regime shift</b></td><td>A model fitted on bull years is used unchanged in a falling market.</td><td>Relationships flipped sign around 2023 (§8).</td></tr>
+<tr><td><b>Evaluation pitfalls</b> (in our earlier pipeline)</td><td>Inflated results.</td><td>Features were forecast one channel at a time, the test set was checked every epoch, and prices were not adjusted for corporate actions. All fixed.</td></tr>
+</table></div>
+
+<!-- ============================================================ -->
+<h2 id="data">3. Data and evaluation protocol</h2>
+<h3>Dataset (built for this thesis)</h3>
+<div class="scroll"><table>
+<tr><th>Component</th><th>Content</th></tr>
+<tr><td>Stocks</td><td>8 VN30 tickers: ACB, CTG, FPT, HPG, MBB, SSI, VCB, VNM; Jan 2020 – Oct 2026 (≈1,695 trading days each)</td></tr>
+<tr><td>Prices</td><td>Adjusted series rebuilt from the exchange's reference-price changes, cross-checked against the provided VN30 files; 11 unadjusted corporate-action days detected and neutralised</td></tr>
+<tr><td>Market context</td><td>Foreign and proprietary trading flows; VN-Index</td></tr>
+<tr><td>News</td><td>93,612 Vietnamese items (company filings, press, market/bank/macro categories); 13,000 tagged to at least one of the 8 companies; 14,951 (headline, company) pairs</td></tr>
+<tr><td>LLM annotations</td><td>Qwen2.5-7B (local, zero-shot): sentiment −2…+2 and event type (earnings, guidance, capital, ownership, deal, legal, management, macro, routine) per pair</td></tr>
+<tr><td>Event dataset</td><td>6,857 event-days (a ticker with non-routine news before the open); 60-day window of 18 price/flow/index features; labels: 5/30/45-day returns, raw, vs VN-Index, and vs the 8-stock peer average</td></tr>
+</table></div>
+<h3>Protocol</h3>
+<ul>
+  <li><b>No look-ahead in news:</b> an item counts for day <i>t</i> only if it was published before the 09:00 open of <i>t</i>; date-only timestamps are treated as end of day.</li>
+  <li><b>Purged rolling-origin splits:</b> test years 2023, 2024, 2025–26; training and validation label windows never overlap the next split.</li>
+  <li><b>Floors:</b> every winrate is shown next to the trivial "take every event in the majority direction" rule for that year. In rising years this alone wins ≈58%.</li>
+  <li><b>Controls:</b> shuffled-news inputs; bootstrap and permutation significance tests.</li>
+  <li><b>Development vs holdout:</b> 2023–24 for design decisions; 2025–26 as the check. <span class="note">2025–26 has been viewed several times during the project, so it is supporting evidence, not a pristine holdout.</span></li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="evidence">4. Preliminary evidence that motivated the design</h2>
+<div class="scroll"><table>
+<tr><th>Finding</th><th class="num">Number</th><th>Implication</th></tr>
+<tr><td>Price-only models, next-day direction (8 stocks pooled, test)</td><td class="num">49–52% (floor 52.2%)</td><td>No exploitable signal in prices alone</td></tr>
+<tr><td>Next-day return after positive vs negative LLM-scored news</td><td class="num">+0.26%/day, t = 3.7</td><td>News carries information prices do not; holds market-relative (+0.16%, t = 3.7)</td></tr>
+<tr><td>Fine-tuning the 7B LLM (LoRA) on ≈4,000 events, 2025–26 AUC</td><td class="num">0.46–0.48</td><td>Overfits; the frozen LLM's judgement generalises better → keep the LLM frozen</td></tr>
+<tr><td>Zero-shot LLM sentiment alone, 30-day AUC (2023 / 2024 / 2025–26)</td><td class="num">0.545 / 0.570 / 0.509</td><td>Small but consistent text signal</td></tr>
+<tr><td>Translating news to English (Qwen), meaning-changing errors</td><td class="num">8% of headlines</td><td>English scores were not more predictive → work in Vietnamese</td></tr>
+</table></div>
+
+<!-- ============================================================ -->
+<h2 id="method">5. Our method: Time-LLM+</h2>
+<p>Time-LLM+ keeps Time-LLM's frozen backbone (Qwen2.5-1.5B-Instruct; 7B tested) and reprogramming, and changes three components. About 23M parameters are trainable; the LLM is frozen.</p>
+<div class="scroll"><table>
+<tr><th>Component</th><th>Original Time-LLM</th><th>Time-LLM+</th></tr>
+<tr><td><b>C1 Prompt</b></td><td>Dataset/task description + statistics of the input series</td><td>Event-grounded news prompt + knowledge tokens</td></tr>
+<tr><td><b>C2 Patching</b></td><td>Fixed patch length and stride</td><td>Knowledge-conditioned adaptive spectral decomposition (KASD)</td></tr>
+<tr><td><b>C3 Objective / regime</b></td><td>MSE forecast, fitted once</td><td>Regime handling (several mechanisms tested; walk-forward adaptation retained)</td></tr>
+</table></div>
+
+<h3>C1 · Event-grounded news prompting</h3>
+<ul>
+  <li>The prompt carries the company's <b>pre-open news</b> (up to 8 items, last 5 trading days), each with the frozen LLM's structured reading: event type, sentiment and age.</li>
+  <li>The same structured information is also given as <b>8 learned knowledge tokens</b> (event, sentiment, age and source embeddings).</li>
+  <li>Unlike our earlier "dynamic prompt", which was generated from the same price indicators, this adds information the time series does not contain. That answers the critique that the prompt was "just data".</li>
+</ul>
+<div class="eq">Input series: &lt;ts&gt; × 60      News knowledge: &lt;kn&gt; × 8
+Pre-open news about the company:
+- [ownership, sentiment -1, today] MBB: SIC chưa mua 1.000.000 cp
+- [management, sentiment +1, 2 sessions ago] MB bổ nhiệm ... vào Ban điều hành
+Will MBB rise above today's opening price after 30 trading days?</div>
+
+<h3>C2 · Knowledge-conditioned adaptive spectral decomposition (KASD)</h3>
+<ul>
+  <li><b>Learnable band-pass filter bank:</b> 5 Gaussian filters in the frequency domain, initialised at periods of 48 / 20 / 10 / 5 / 2.5 days, with learnable centres and widths. The input is split into band components by FFT → filter → inverse FFT.</li>
+  <li><b>News hypernetwork:</b> reads the knowledge summary, the market state and news statistics, plus a <b>per-event-type spectral prior</b>, and shifts each band's centre and width <i>per sample</i>. The text changes <b>which</b> components are extracted, not just how they are weighted.</li>
+  <li><b>Response-spectrum supervision</b> (training only): the bands are fitted, as a mixture over frequency, to the spectrum of the realised post-event return path. This gives the conditioning a direct learning signal.</li>
+  <li><b>Period-aligned patching</b> (optional): each band is patched with a patch length equal to its own period, via differentiable resampling.</li>
+  <li>A diversity penalty keeps the bands apart. Band tokens are reprogrammed into the LLM space as in Time-LLM.</li>
+</ul>
+
+<h3>C3 · Regime handling</h3>
+<p>Four learned mechanisms were developed and tested (§8): a fixed-sign anchor, selective trading heads (profit-aware, evidence-aware, regime-conditioned), a regime-neutral selective head, and regime-adaptive re-centring with a learned drift gate. None was robust. The retained C3 is <b>walk-forward adaptation</b>:</p>
+<ul>
+  <li>a regime-neutral regression objective (MSE on the 30-day return, no fixed-direction prior);</li>
+  <li>quarterly retraining with a purged 12-month validation window;</li>
+  <li>a symmetric trade rule: long the top 10% of scores and short the bottom 10%, with thresholds set on validation.</li>
+</ul>
+<p>Together with the analysis of why the learned mechanisms fail, this forms an empirical contribution.</p>
+
+<!-- ============================================================ -->
+<h2 id="results">6. Results</h2>
+<h3>Trading results, 30-day horizon</h3>
+<div class="scroll"><table>
+<tr><th>Strategy</th><th class="num">2023 (dev)</th><th class="num">2024 (dev)</th><th class="num">2025–26 (check)</th><th>Notes</th></tr>
+<tr><td>Floor: majority direction for every event</td><td class="num">57.3%</td><td class="num">58.6%</td><td class="num">52.1%</td><td>Trivial reference</td></tr>
+<tr><td>Configuration found by search, fitted once (3 seeds)</td><td class="num">61.9%</td><td class="num">62.3%</td><td class="num">52.7%</td><td>Meets 60% in development; no edge out of sample</td></tr>
+<tr><td>Same configuration, walk-forward (3 seeds)</td><td class="num">–</td><td class="num">–</td><td class="num">55.1 / 55.6 / 56.9%</td><td>Shifts to shorts in the 2026 decline</td></tr>
+<tr class="hl"><td>C1 + C2 with walk-forward MSE (C3 retained)</td><td class="num">–</td><td class="num">–</td><td class="num">57.3%</td><td>+1.23% per trade, 461 trades; 310 shorts at 64.5% win</td></tr>
+<tr><td>Evidence-aware selective head (fitted once)</td><td class="num">73.3%</td><td class="num">70.2%</td><td class="num">46.9%</td><td>100% longs: a bull-market artefact</td></tr>
+</table></div>
+<p class="note">Winrate = share of trades whose 30-day return had the predicted sign; trades are entered at the open of the event day. 2025–26 runs Jan 2025 – Sep 2026.</p>
+
+<h3>Walk-forward per quarter (2025–26 winrate %)</h3>
+<div class="scroll"><table>
+<tr><th>Model</th><th class="num">25Q1</th><th class="num">25Q2</th><th class="num">25Q3</th><th class="num">25Q4</th><th class="num">26Q1</th><th class="num">26Q2</th><th class="num">26Q3</th><th class="num">All</th></tr>
+<tr class="hl"><td>Walk-forward MSE (retained)</td><td class="num">65</td><td class="num">44</td><td class="num">44</td><td class="num">33</td><td class="num">69</td><td class="num">71</td><td class="num">61</td><td class="num">57.3</td></tr>
+<tr><td>Same model with anchored direction head</td><td class="num">36</td><td class="num">62</td><td class="num">55</td><td class="num">26</td><td class="num">44</td><td class="num">55</td><td class="num">69</td><td class="num">49.7</td></tr>
+<tr><td>Evidence-aware selective head</td><td class="num">46</td><td class="num">90</td><td class="num">29</td><td class="num">33</td><td class="num">31</td><td class="num">23</td><td class="num">50</td><td class="num">48.3</td></tr>
+</table></div>
+<p class="note">2025 Q4 is the weakest quarter for every model. Quarterly retraining reacts one quarter late at turning points.</p>
+
+<!-- ============================================================ -->
+<h2 id="ablation">7. Ablation study</h2>
+<p>Each block varies one contribution while the other two stay at the final setting. Metric: test AUC on the 30-day total-return direction, per year and pooled over 2023–26 (one seed). "Win / floor" is the trade winrate against that year's floor. The last column is the share of bootstrap resamples in which the row beats the final configuration.</p>
+
+<h3>C1 · Prompting</h3>
+<div class="scroll"><table>
+<tr><th>Prompt</th><th class="num">Pooled AUC</th><th class="num">2023</th><th class="num">2024</th><th class="num">2025–26</th><th class="num">Win / floor 2024</th><th class="num">Beats final</th></tr>
+<tr><td>None</td><td class="num">0.501</td><td class="num">0.508</td><td class="num">0.434</td><td class="num">0.488</td><td class="num">49.6 / 58.6</td><td class="num">0%</td></tr>
+<tr><td>Original Time-LLM (statistics)</td><td class="num">0.489</td><td class="num">0.533</td><td class="num">0.489</td><td class="num">0.483</td><td class="num">46.9 / 58.6</td><td class="num">0%</td></tr>
+<tr><td>Our earlier dynamic prompt</td><td class="num">0.490</td><td class="num">0.462</td><td class="num">0.473</td><td class="num">0.507</td><td class="num">44.9 / 58.6</td><td class="num">0%</td></tr>
+<tr><td>News prompt</td><td class="num">0.541</td><td class="num">0.539</td><td class="num">0.572</td><td class="num">0.511</td><td class="num">62.5 / 58.6</td><td class="num">99%</td></tr>
+<tr class="hl"><td>News prompt + knowledge tokens (final C1)</td><td class="num">0.536</td><td class="num">0.529</td><td class="num">0.566</td><td class="num">0.513</td><td class="num">62.6 / 58.6</td><td class="num">–</td></tr>
+<tr><td>Shuffled news (control)</td><td class="num">0.508</td><td class="num">0.550</td><td class="num">0.514</td><td class="num">0.479</td><td class="num">51.5 / 58.6</td><td class="num">0%</td></tr>
+</table></div>
+<p><span class="badge good">C1 supported</span> Real news beats every non-news prompt and the shuffled control. The knowledge tokens add nothing beyond the news text (0.536 vs 0.541, within noise).</p>
+
+<h3>C2 · Patching</h3>
+<div class="scroll"><table>
+<tr><th>Patching</th><th class="num">Pooled AUC</th><th class="num">2023</th><th class="num">2024</th><th class="num">2025–26</th><th class="num">Beats final</th></tr>
+<tr><td>Fixed patches (original Time-LLM)</td><td class="num">0.539</td><td class="num">0.578</td><td class="num">0.569</td><td class="num">0.493</td><td class="num">74%</td></tr>
+<tr><td>Our earlier FFT + attention</td><td class="num">0.528</td><td class="num">0.545</td><td class="num">0.564</td><td class="num">0.478</td><td class="num">8%</td></tr>
+<tr><td>Learnable filter bank</td><td class="num">0.533</td><td class="num">0.591</td><td class="num">0.567</td><td class="num">0.498</td><td class="num">29%</td></tr>
+<tr class="hl"><td>Filter bank + news hypernetwork</td><td class="num">0.550</td><td class="num">0.550</td><td class="num">0.567</td><td class="num">0.511</td><td class="num">100%</td></tr>
+<tr><td>+ period-aligned patching (full KASD)</td><td class="num">0.536</td><td class="num">0.529</td><td class="num">0.566</td><td class="num">0.513</td><td class="num">–</td></tr>
+</table></div>
+<p><span class="badge warn">C2 partially supported</span> The news-conditioned filter bank is the best variant and beats our earlier FFT+attention. Period-aligned patching does not help. Data check: post-event response spectra are similar across event types (dominant period ≈3.7 days for all; low-frequency share 12–14%, p = 0.007), so event-specific time scales are small.</p>
+
+<h3>C3 · Objective (original C3 design)</h3>
+<div class="scroll"><table>
+<tr><th>Objective</th><th class="num">Pooled AUC</th><th class="num">2023</th><th class="num">2024</th><th class="num">2025–26</th><th class="num">Beats final</th></tr>
+<tr><td>MSE</td><td class="num">0.549</td><td class="num">0.516</td><td class="num">0.533</td><td class="num">0.537</td><td class="num">89%</td></tr>
+<tr><td>Our earlier hybrid loss</td><td class="num">0.559</td><td class="num">0.561</td><td class="num">0.467</td><td class="num">0.547</td><td class="num">99%</td></tr>
+<tr><td>Market / company decomposition</td><td class="num">0.485</td><td class="num">0.417</td><td class="num">0.549</td><td class="num">0.477</td><td class="num">0%</td></tr>
+<tr><td>+ Group DRO over regimes</td><td class="num">0.488</td><td class="num">0.506</td><td class="num">0.540</td><td class="num">0.471</td><td class="num">0%</td></tr>
+<tr><td>+ same-week ranking loss</td><td class="num">0.525</td><td class="num">0.532</td><td class="num">0.489</td><td class="num">0.514</td><td class="num">14%</td></tr>
+<tr><td>Full (+ selective head, conformal threshold)</td><td class="num">0.536</td><td class="num">0.529</td><td class="num">0.566</td><td class="num">0.513</td><td class="num">–</td></tr>
+</table></div>
+<p><span class="badge bad">Original C3 not supported</span> Decomposition and Group DRO hurt; plain MSE ranks events as well or better. This motivated the C3 redesign in §8.</p>
+
+<!-- ============================================================ -->
+<h2 id="c3">8. C3: why learned regime mechanisms fail</h2>
+<h3>Every C3 mechanism tested</h3>
+<div class="scroll"><table>
+<tr><th>#</th><th>Mechanism</th><th>What it learns from the past</th><th>Outcome</th></tr>
+<tr><td>1</td><td>Fixed-sign anchor (sentiment + 60-day reversal)</td><td>Reversal</td><td class="bad">Training years showed momentum, so it learned nothing</td></tr>
+<tr><td>2</td><td>Decomposition + Group DRO + ranking + selective head + conformal threshold</td><td>Worst-regime robustness</td><td class="bad">Hurt AUC; conformal threshold never certified any trades</td></tr>
+<tr><td>3–6</td><td>Selective heads: plain, hybrid, profit-aware, regime-conditioned</td><td>When to trade</td><td class="bad">Passed against MSE, failed against fair references</td></tr>
+<tr><td>7</td><td>Evidence-aware selective head</td><td>When to trust the news signal</td><td class="bad">73% / 70% in development, 46.9% out of sample; 100% longs</td></tr>
+<tr><td>8</td><td>Regime-neutral selective head (long bias removed)</td><td>Selection on both sides</td><td class="bad">No better than simple score-based selection</td></tr>
+<tr><td>9</td><td>Regime-adaptive re-centring with a learned drift gate</td><td>Whether market drift persists</td><td class="bad">AUC 0.255 in 2023 (systematically backwards)</td></tr>
+<tr class="hl"><td>–</td><td>Walk-forward MSE (retained)</td><td>Nothing fixed; re-estimated each quarter</td><td class="good">57.3%, +1.23% per trade out of sample</td></tr>
+</table></div>
+
+<h3>The common cause: relationships flipped sign around 2023</h3>
+<div class="scroll"><table>
+<tr><th>Relationship</th><th class="num">2020–22 (training)</th><th class="num">2023–24</th><th class="num">2025–26</th></tr>
+<tr><td>Recent market drift → next 30-day return (correlation)</td><td class="num good">+0.18 (persists)</td><td class="num bad">−0.28 (reverses)</td><td class="num bad">−0.16 (reverses)</td></tr>
+<tr><td>Share of events followed by a 30-day rise</td><td class="num">≈57%</td><td class="num">57–59%</td><td class="num">48%</td></tr>
+<tr><td>News-sentiment weight fitted on training years</td><td class="num">below 0.1 (hit the floor)</td><td colspan="2" class="num">sentiment alone predictive out of sample (AUC 0.545 / 0.570 in 2023 / 2024)</td></tr>
+</table></div>
+<p>Any mechanism that learns a <i>fixed</i> mapping from market state or news to direction inherits the training period's regime. Once that regime ends, it is confidently wrong. The selective head's 70%+ development winrate was long bias meeting a rising market. Frequent re-estimation is the only approach that survived. This explains why static models, including the original Time-LLM, fail in this market.</p>
+
+<!-- ============================================================ -->
+<h2 id="limits">9. Limitations and next steps</h2>
+<ul>
+  <li><b>One seed</b> for most comparisons; AUC differences of about 0.01 are within noise. Only large gaps should be relied on (C1 news vs non-news; the drops from decomposition and DRO).</li>
+  <li><b>The 2025–26 period has been viewed many times.</b> The cleanest confirmation is a <b>forward test</b>: freeze the final model and evaluate it on November 2026 onward.</li>
+  <li><b>Small universe:</b> 8 stocks and ≈7,000 events. Extending to the full VN30 would tighten all estimates and allow a fresh holdout.</li>
+  <li><b>Turning points:</b> quarterly retraining lags by one quarter (2025 Q4). Monthly retraining is a cheap next experiment.</li>
+  <li><b>Backbone:</b> 7B was not reliably better than 1.5B and is about 4× slower.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="repro">10. Reproducing the results</h2>
+<div class="scroll"><table>
+<tr><th>Step</th><th>Command (repo root, <code>.venv</code>)</th></tr>
+<tr><td>Collect data</td><td><code>data_collection/fetch_prices.py</code>, <code>fetch_news.py</code>, <code>fetch_market_news.py</code>, <code>fetch_flows.py</code></td></tr>
+<tr><td>Text pipeline</td><td><code>python -m stock_llm.text.corpus</code> → <code>embed</code> → <code>llm_score</code> → <code>event_type</code></td></tr>
+<tr><td>Train one model</td><td><code>python -m stock_llm.train_plus --fold 2 --prompt news --knowledge 1 --patching bank_text --loss mse</code></td></tr>
+<tr><td>Ablation grid (two machines)</td><td><code>python -m stock_llm.ablations</code>; table: <code>python -m stock_llm.analysis.summarize_ablation</code></td></tr>
+<tr><td>Walk-forward</td><td><code>python -m stock_llm.walk_forward_c3</code></td></tr>
+<tr><td>C3 experiments</td><td><code>python -m stock_llm.c3_search</code>, <code>python -m stock_llm.run_regime_adapt</code></td></tr>
+<tr><td>Backtest</td><td><code>python -m stock_llm.backtest_plus --pattern "reports/.../pred_*.npz"</code></td></tr>
+</table></div>
+
+<footer>
+  Generated from the experiment logs in this repository (branch <code>thesis/multimodal</code>). All numbers are test-period results under the protocol in §3. Raw data (<code>data/</code>), reports (<code>reports/</code>) and checkpoints are gitignored and can be regenerated with the commands above.
+</footer>
+</main>
+</body>
+</html>
